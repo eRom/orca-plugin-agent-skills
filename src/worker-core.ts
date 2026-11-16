@@ -46,6 +46,11 @@ type Agents = { active: string[]; fallback: boolean; writeDirs: readonly Managed
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const codeOf = (error: unknown): string => toLibDiagnostic(error).code
 const libFailure = (error: unknown): OpError => ({ code: 'lib', diagnostics: [toLibDiagnostic(error)] })
+/** `error=<code> lib=<codes>` : la fin commune des lignes de journal d'une erreur. */
+function describeError(error: OpError): string {
+  const codes = (error.diagnostics ?? []).map((diagnostic) => diagnostic.code).join(',')
+  return `error=${error.code}${codes ? ` lib=${codes}` : ''}${error.trashed ? ' trashed' : ''}`
+}
 const folderOf = (op: OpRequest): string => (op.kind === 'add' ? op.names.join(',') : op.folder)
 
 /** Dernière activation : `deactivate` libère ce qu'elle tient (aperçu ouvert, minuteur). */
@@ -70,6 +75,7 @@ function reusingTrial(lib: SkillsLib, trial: Stage): SkillsLib {
 
 export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promise<void> {
   const hostCall = orca.host.call.bind(orca.host) as unknown as HostCall
+  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, (line) => orca.log(line))
   let inventory: Inventory | null = null
   let probing: Promise<Inventory> | null = null
   let writing: Promise<unknown> = Promise.resolve()
@@ -161,7 +167,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
    * exclusions et leur élagage, donc `pruneSeen` ne lève jamais une exclusion qu'un geste vient de poser.
    */
   async function currentState(force = false): Promise<PanelState> {
-    const focused = await resolveWorkspace(hostCall, deps.home)
+    const focused = await focusedWorkspace()
     const agents = await agentsOf(force)
     const base = {
       workspace: focused.view,
@@ -223,11 +229,17 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     )
   }
 
-  async function previewSource(request: PreviewRequest): Promise<PreviewAnswer> {
+  /** Une fonction plutôt qu'un test en ligne : TypeScript ne doit pas garder `current` rétréci à travers un `await`. */
+  const addRunning = (): boolean => current?.kind === 'add'
+
+  async function previewSource(request: PreviewRequest, signal: AbortSignal): Promise<PreviewAnswer> {
     // Un ajout en cours tient la source de l'aperçu : on n'en ouvre pas un autre par-dessus.
-    if (current?.kind === 'add') return { ok: false, error: { code: 'busy' } }
-    const focused = await resolveWorkspace(hostCall, deps.home)
+    if (addRunning()) return { ok: false, error: { code: 'busy' } }
+    const focused = await focusedWorkspace()
     if (!('root' in focused)) return { ok: false, error: { code: 'no-workspace' } }
+    // Un ajout a pu démarrer pendant l'attente ci-dessus et prendre la source courante : le contrôle est refait, de façon
+    // synchrone avec la libération, pour qu'aucun `await` ne s'intercale entre les deux.
+    if (addRunning()) return { ok: false, error: { code: 'busy' } }
 
     const ticket = ++previewTicket
     releasePreview()
@@ -259,8 +271,9 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       }
       skills = [{ name: hit.name, description: hit.description }]
     }
-    // Un aperçu plus récent a été demandé pendant la lecture : celui-ci est périmé, sa source est rendue.
-    if (ticket !== previewTicket) {
+    // Requête abandonnée (délai du panneau dépassé, panneau fermé) ou aperçu plus récent demandé pendant la lecture :
+    // personne n'attend plus celui-ci, sa source est rendue au lieu d'être gardée orpheline.
+    if (signal.aborted || ticket !== previewTicket) {
       await source.dispose().catch(() => undefined)
       return { ok: false, error: { code: 'preview-expired' } }
     }
@@ -270,14 +283,23 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     return { ok: true, previewId: held.id, label, skills, preselected: skills.map((skill) => skill.name) }
   }
 
-  orca.panels.handle('source.preview', (request) => previewSource(request))
+  orca.panels.handle('source.preview', async (request, context) => {
+    try {
+      const answer = await previewSource(request, context.signal)
+      if (!answer.ok) orca.log(`op=preview ${describeError(answer.error)}`)
+      return answer
+    } catch (error) {
+      orca.log(`op=preview failed: ${messageOf(error)}`)
+      throw error
+    }
+  })
 
   // --- Recherche ---
 
   /** Clés `dossier + source` des skills du projet suivies au lock : de quoi marquer un résultat « installé ». */
   async function installedKeys(): Promise<Set<string>> {
     try {
-      const focused = await resolveWorkspace(hostCall, deps.home)
+      const focused = await focusedWorkspace()
       if (!('root' in focused)) return new Set()
       const [scan, { lock }] = await Promise.all([scanWorkspace(focused.root), readLock(focused.root)])
       const keys = new Set<string>()
@@ -299,7 +321,10 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       const installed = await installedKeys()
       return { ok: true, hits: hits.map((hit) => ({ ...hit, installed: installed.has(`${hit.skillId}\n${hit.source}`) })) }
     } catch (error) {
-      if (!(error instanceof SearchError)) throw error
+      if (!(error instanceof SearchError)) {
+        orca.log(`search failed: ${messageOf(error)}`)
+        throw error
+      }
       orca.log(`search failed code=${error.code}`)
       return { ok: false, error: error.code }
     }
@@ -319,8 +344,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
 
   /** Une ligne par erreur ou avertissement, avec le code et le dossier : de quoi retrouver le geste sans ouvrir le panneau. */
   function logError(op: OpRequest, error: OpError): void {
-    const codes = (error.diagnostics ?? []).map((diagnostic) => diagnostic.code).join(',')
-    orca.log(`op=${op.kind} folder=${folderOf(op)} error=${error.code}${codes ? ` lib=${codes}` : ''}${error.trashed ? ' trashed' : ''}`)
+    orca.log(`op=${op.kind} folder=${folderOf(op)} ${describeError(error)}`)
   }
 
   function logWarnings(op: OpRequest, warnings: readonly LibDiagnostic[]): void {
@@ -368,20 +392,26 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       return { error }
     }
 
-    const unsafe = new Set((await scanWorkspace(ctx.root)).unsafeDirs)
-    const dirs = ctx.writeDirs.filter((dir) => !unsafe.has(dir))
-    const colliding: string[] = []
-    for (const { folder } of trial.staged) {
-      for (const dir of dirs) {
-        if ((await lstat(join(ctx.root, dir, folder)).catch(() => null)) === null) continue
-        if (!colliding.includes(folder)) colliding.push(folder)
+    // Une exception après l'essai ne doit pas laisser son dossier : l'appelant répond l'erreur, nous rendons l'essai.
+    try {
+      const unsafe = new Set((await scanWorkspace(ctx.root)).unsafeDirs)
+      const dirs = ctx.writeDirs.filter((dir) => !unsafe.has(dir))
+      const colliding: string[] = []
+      for (const { folder } of trial.staged) {
+        for (const dir of dirs) {
+          if ((await lstat(join(ctx.root, dir, folder)).catch(() => null)) === null) continue
+          if (!colliding.includes(folder)) colliding.push(folder)
+        }
       }
+      if (colliding.length > 0) {
+        if (!op.replace) return await refuse({ code: 'collision', folders: colliding })
+        if (!ctx.trash) return await refuse({ code: 'no-trash' })
+      }
+      return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } }
+    } catch (error) {
+      await trial.dispose().catch(() => undefined)
+      throw error
     }
-    if (colliding.length > 0) {
-      if (!op.replace) return refuse({ code: 'collision', folders: colliding })
-      if (!ctx.trash) return refuse({ code: 'no-trash' })
-    }
-    return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } }
   }
 
   function runOp(op: OpRequest, ctx: OpContext, held: Preview | null): Promise<OpResult> {
@@ -409,18 +439,22 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     } catch (error) {
       result = { ok: false, error: libFailure(error) }
     }
-    if (op.kind === 'add') releasePreview()
+    // Seule la source tenue par ce geste est rendue : un aperçu plus récent n'est pas le sien.
+    if (op.kind === 'add' && held && preview === held) releasePreview()
+    // Le geste a réussi mais les exclusions n'ont pas pu être écrites : succès, avec un avertissement que le panneau montre.
+    const extra: LibDiagnostic[] = []
     try {
       const change = result.ok ? exclusionChange(op, result, projectKey) : null
       if (change) await updateExclusions(change)
     } catch (error) {
-      orca.log(`exclusions failed: ${messageOf(error)}`)
+      orca.log(`op=${op.kind} folder=${folderOf(op)} warning=PLUGIN_EXCLUSIONS_FAILED`)
+      extra.push({ code: 'PLUGIN_EXCLUSIONS_FAILED', message: messageOf(error) })
     }
     if (result.ok) logWarnings(op, result.warnings)
     else logError(op, result.error)
     current = null
     const finished: OpFinished = result.ok
-      ? { opId, op, ok: true, warnings: result.warnings }
+      ? { opId, op, ok: true, warnings: [...result.warnings, ...extra] }
       : { opId, op, ok: false, error: result.error, warnings: [] }
     orca.panels.post('op.finished', finished)
     await postStateSafely()
@@ -431,7 +465,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       logError(op, error)
       return { ok: false, error }
     }
-    const focused = await resolveWorkspace(hostCall, deps.home)
+    const focused = await focusedWorkspace()
     if (!('root' in focused)) return refuse({ code: 'no-workspace' })
     const agents = await agentsOf()
     let ctx: OpContext = {
@@ -450,7 +484,13 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       if (!held) return refuse({ code: 'preview-expired' })
       // Le minuteur ne doit pas rendre la source en plein geste ; un refus le réarme.
       if (held.timer) clearTimeout(held.timer)
-      const prepared = await prepareAdd(op, ctx, held)
+      let prepared: Awaited<ReturnType<typeof prepareAdd>>
+      try {
+        prepared = await prepareAdd(op, ctx, held)
+      } catch (error) {
+        armPreview(held)
+        return refuse(libFailure(error))
+      }
       if ('error' in prepared) {
         armPreview(held)
         return refuse(prepared.error)
@@ -467,7 +507,10 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
   }
 
   orca.panels.handle('op.start', async ({ op }): Promise<StartAnswer> => {
-    if (current) return { ok: false, error: { code: 'busy' } }
+    if (current) {
+      logError(op, { code: 'busy' })
+      return { ok: false, error: { code: 'busy' } }
+    }
     // Pris avant tout `await` : deux requêtes rapprochées ne passent jamais toutes les deux.
     current = op
     let started = false
@@ -475,6 +518,9 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       const answer = await startOp(op)
       started = answer.ok
       return answer
+    } catch (error) {
+      orca.log(`op=${op.kind} folder=${folderOf(op)} failed: ${messageOf(error)}`)
+      throw error
     } finally {
       if (!started) current = null
     }

@@ -87,3 +87,17 @@ test('the home folder is refused, also through a symlink', async () => {
   assert.deepEqual(await resolveWorkspace(hostOf(context('identity:x'), [row(home)]), home), { view: { status: 'home' } })
   assert.deepEqual(await resolveWorkspace(hostOf(context('identity:x'), [row(link)]), home), { view: { status: 'home' } })
 })
+
+test('an unlisted id is logged only when the host list was truncated', async () => {
+  const root = tempDir('ws-truncated')
+  const home = tempDir('ws-home')
+  const hostWith = (truncated: boolean): HostCall =>
+    (async (method: string) =>
+      method === 'workspace.readContext' ? context('identity:other') : { workspaces: [row(root)], truncated }) as unknown as HostCall
+  const lines: string[] = []
+  assert.deepEqual(await resolveWorkspace(hostWith(true), home, (line) => lines.push(line)), { view: { status: 'none' } })
+  assert.equal(lines.length, 1)
+  assert.match(lines[0]!, /truncated/)
+  await resolveWorkspace(hostWith(false), home, (line) => lines.push(line))
+  assert.equal(lines.length, 1, 'a complete list that lacks the id is not worth a line')
+})

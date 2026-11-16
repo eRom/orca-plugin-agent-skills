@@ -24,14 +24,22 @@ async function isLinkedWorktree(root: string): Promise<boolean> {
  * Espace focalisé et ce qu'on peut en faire. Seul le statut `ready` porte un `root` : tout autre statut interdit balayage et gestes.
  * Un espace sans ligne dans `workspace.list` compte pour aucun (l'hôte n'en donne alors ni chemin ni hôte).
  */
-export async function resolveWorkspace(call: HostCall, home: string): Promise<FocusedWorkspace | { view: WorkspaceView }> {
+export async function resolveWorkspace(
+  call: HostCall,
+  home: string,
+  log: (line: string) => void = () => {}
+): Promise<FocusedWorkspace | { view: WorkspaceView }> {
   const context = await call('workspace.readContext', {})
   const id = context?.workspaceId
   if (!context || !id) return { view: { status: 'none' } }
 
-  const { workspaces } = await call('workspace.list', {})
+  const { workspaces, truncated } = await call('workspace.list', {})
   const row = workspaces.find((candidate) => candidate.id === id)
-  if (!row) return { view: { status: 'none' } }
+  if (!row) {
+    // La liste de l'hôte est plafonnée : l'espace focalisé peut en être sorti sans avoir disparu.
+    if (truncated) log('workspace not found in a truncated workspace.list, treated as none')
+    return { view: { status: 'none' } }
+  }
   if (isRemoteHost(row.hostId)) return { view: { status: 'remote' } }
 
   const real = await realpath(row.path).catch(() => null)

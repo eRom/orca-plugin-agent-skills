@@ -8,7 +8,7 @@ import { EXCLUSIONS_KEY } from './exclusions'
 import type { InventoryDeps, OrcaSettings } from './inventory'
 import type { OpFinished, OpRequest, PanelState } from './protocol'
 import { fakeSkillsLib, fakeTrasher, tempDir, writeSkill, type FakeSkillsLib, type FakeTrasher } from './test-fixtures'
-import { activateWith, type WorkerDeps } from './worker-core'
+import { activateWith, deactivate, type WorkerDeps } from './worker-core'
 
 /** Commandes des agents de Romain : Claude, Codex, Grok, OpenCode, Pi, Antigravity, DeepSeek Harness. */
 const ROMAIN_COMMANDS = ['claude', 'codex', 'grok', 'opencode', 'pi', 'agy', 'dsh-tui', 'dsh']
@@ -42,7 +42,18 @@ const rowOf = (path: string, over: Partial<Row> = {}): Row => ({
 })
 const contextOf = (workspaceId: string) => ({ workspaceId, branch: 'feat/x', displayName: 'feature', terminals: [] })
 
+/** Leviers du test sur ce que le worker voit : stockage lent ou en panne, et les gestionnaires de requêtes (pour passer un `signal`). */
+type Controls = {
+  /** Appelé après chaque lecture du stockage ; la valeur lue est rendue après l'attente (donc périmée). */
+  afterStorageGet?: (key: string) => Promise<void>
+  failStorageSet: boolean
+  /** Appelé avant que `workspace.list` réponde : de quoi faire attendre une requête à l'hôte. */
+  beforeWorkspaceList?: () => Promise<void>
+  handlers: Map<string, (input: unknown, context: { panel: unknown; signal: AbortSignal }) => Promise<unknown>>
+}
+
 type Setup = {
+  controls: Controls
   root: string
   home: string
   lib: FakeSkillsLib
@@ -73,13 +84,17 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
   const { deps: inventory, probe } = inventoryDeps(options.found, options.settings)
   let rows = options.rows ? options.rows(root) : [rowOf(root)]
   let focused = 'identity:x'
+  const controls: Controls = { failStorageSet: false, handlers: new Map() }
   const host =
     options.host ??
     mockHost({
       storage: options.storage,
       results: {
         'workspace.readContext': () => contextOf(focused),
-        'workspace.list': () => ({ workspaces: rows, truncated: false })
+        'workspace.list': async () => {
+          await controls.beforeWorkspaceList?.()
+          return { workspaces: rows, truncated: false }
+        }
       }
     })
   const deps: WorkerDeps = {
@@ -95,8 +110,41 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
     tmpdir: tempDir('worker-tmp'),
     ...options.deps
   }
-  const worker = await mountWorker({ default: (orca) => activateWith(orca, deps) }, { host })
+  // L'objet `orca` du harnais est figé : on en fait une copie dont le stockage et les gestionnaires passent par `controls`.
+  const worker = await mountWorker(
+    {
+      default: (orca) =>
+        activateWith(
+          {
+            ...orca,
+            storage: {
+              ...orca.storage,
+              get: async (key: string) => {
+                const value = await orca.storage.get(key)
+                await controls.afterStorageGet?.(key)
+                return value
+              },
+              set: async (key: string, value: Parameters<typeof orca.storage.set>[1]) => {
+                if (controls.failStorageSet) throw new Error('storage is read-only')
+                return orca.storage.set(key, value)
+              }
+            },
+            panels: {
+              ...orca.panels,
+              handle: ((name: string, handler: never) => {
+                controls.handlers.set(name, handler)
+                return (orca.panels.handle as (n: string, h: never) => unknown)(name, handler)
+              }) as typeof orca.panels.handle
+            }
+          },
+          deps
+        ),
+      deactivate
+    },
+    { host }
+  )
   return {
+    controls,
     root,
     home,
     lib,
@@ -144,6 +192,13 @@ function previewable(setup: Setup, names: readonly string[]): { source: ReturnTy
   setup.lib.resolve = async () => source
   return { source, dir }
 }
+
+/**
+ * Appelle le gestionnaire du worker sans passer par `request` : celui-ci attend la fin de tous les appels à l'hôte en
+ * vol, y compris celui qu'un test retient exprès, et se bloquerait. Permet aussi de fournir son propre `signal`.
+ */
+const callHandler = (setup: Setup, name: string, input: unknown, signal: AbortSignal = new AbortController().signal): Promise<unknown> =>
+  setup.controls.handlers.get(name)!(input, { panel: {}, signal })
 
 async function previewAdd(setup: Setup, names: readonly string[]): Promise<string> {
   const { dir } = previewable(setup, names)
@@ -645,16 +700,213 @@ test('a worker restarted mid-gesture posts a free state', async () => {
   await restarted.worker.deactivate()
 })
 
-test('concurrent state reads never drop an exclusion written by a gesture', async () => {
-  const setup = await boot()
+test('a state read that prunes and a gesture that excludes never overwrite each other', async () => {
+  // Codex voit `alpha` mais l'exclut encore au stockage : le premier `state.get` l'élague et écrit. Sa lecture du
+  // stockage rend une valeur périmée après 80 ms, pendant lesquelles un `remove-dir` termine et exclut Grok.
+  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['codex'] } } } })
   writeSkill(setup.root, '.agents/skills', 'alpha')
   writeSkill(setup.root, '.grok/skills', 'alpha')
-  await stateOf(setup.worker)
-  await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' } })
-  const reads = Array.from({ length: 6 }, () => stateOf(setup.worker))
-  await settled(setup.worker)
-  await Promise.all(reads)
+  let entered = (): void => {}
+  const slowReadStarted = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  let slow = true
+  setup.controls.afterStorageGet = async (key) => {
+    if (key !== EXCLUSIONS_KEY || !slow) return
+    slow = false
+    entered()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+  }
+  const read = stateOf(setup.worker)
+  await slowReadStarted
+  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' } })
+  assert.equal(answer.ok, true)
+  assert.equal((await settled(setup.worker)).ok, true)
+  await read
+  // Les deux effets : Codex élagué (il voit la skill), Grok exclu (il l'a perdue).
   assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['grok'] } })
+  await setup.worker.deactivate()
+})
+
+test('a preview that waited on the host cannot release the source an add took meanwhile', async () => {
+  const setup = await boot()
+  const first = setup.lib.source([{ name: 'alpha' }])
+  let disposed = 0
+  first.dispose = async () => {
+    disposed++
+  }
+  setup.lib.resolve = async () => first
+  const dir = tempDir('worker-source')
+  const opened = await setup.worker.request('source.preview', { kind: 'path', text: dir })
+  assert.equal(opened.ok, true)
+  if (!opened.ok) return
+
+  // Le second aperçu attend l'hôte (`workspace.list`) ; pendant ce temps, l'ajout démarre et prend la source du premier.
+  let resolves = 0
+  setup.lib.resolve = async () => {
+    resolves++
+    return setup.lib.source([{ name: 'other' }])
+  }
+  let releaseHost = (): void => {}
+  let hostReached = (): void => {}
+  const reached = new Promise<void>((resolve) => {
+    hostReached = resolve
+  })
+  setup.controls.beforeWorkspaceList = async () => {
+    setup.controls.beforeWorkspaceList = undefined
+    hostReached()
+    await new Promise<void>((resolve) => {
+      releaseHost = resolve
+    })
+  }
+  const waiting = callHandler(setup, 'source.preview', { kind: 'path', text: dir })
+  await reached
+  const gate = gateInstall(setup.lib)
+  const add = await callHandler(setup, 'op.start', ADD(opened.previewId, ['alpha']))
+  assert.equal((add as { ok: boolean }).ok, true)
+
+  releaseHost()
+  assert.deepEqual(await waiting, { ok: false, error: { code: 'busy' } })
+  assert.equal(resolves, 0, 'the refused preview never read a source')
+  assert.equal(disposed, 0, 'the add still holds its source')
+
+  gate.release()
+  assert.equal((await settled(setup.worker)).ok, true)
+  assert.equal(disposed, 1, 'the add releases its own source once, when it ends')
+  await setup.worker.deactivate()
+})
+
+test('an aborted preview releases its source instead of keeping it', async () => {
+  const setup = await boot()
+  const source = setup.lib.source([{ name: 'alpha' }])
+  let disposed = 0
+  source.dispose = async () => {
+    disposed++
+  }
+  let release = (): void => {}
+  let resolveStarted = (): void => {}
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve
+  })
+  setup.lib.resolve = async () => {
+    resolveStarted()
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return source
+  }
+  // Le harnais ne sait pas annuler une requête : on appelle le gestionnaire du worker avec notre propre signal.
+  const controller = new AbortController()
+
+  const pending = callHandler(setup, 'source.preview', { kind: 'path', text: tempDir('worker-source') }, controller.signal)
+  await started
+  controller.abort()
+  release()
+  assert.deepEqual(await pending, { ok: false, error: { code: 'preview-expired' } })
+  assert.equal(disposed, 1)
+  await setup.worker.deactivate()
+  assert.equal(disposed, 1, 'nothing was kept to release again')
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=preview error=preview-expired')))
+})
+
+test('deactivate releases an open preview', async () => {
+  const setup = await boot()
+  const source = setup.lib.source([{ name: 'alpha' }])
+  let disposed = 0
+  source.dispose = async () => {
+    disposed++
+  }
+  setup.lib.resolve = async () => source
+  assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source') })).ok, true)
+  assert.equal(disposed, 0)
+  await setup.worker.deactivate()
+  assert.equal(disposed, 1)
+})
+
+test('every refused preview and start is logged on one line', async () => {
+  const setup = await boot()
+  const logged = (needle: string): boolean => setup.worker.logs.some((line) => line.includes(needle) && !line.includes('\n'))
+
+  await setup.worker.request('source.preview', { kind: 'path', text: '/no/such/folder' })
+  assert.ok(logged('op=preview error=path-not-found'))
+
+  setup.lib.resolve = async () => setup.lib.source([{ name: 'alpha' }])
+  await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'ghost' })
+  assert.ok(logged('op=preview error=lib lib=SKILLS_NO_MATCHING_SKILLS'))
+
+  const gate = gateInstall(setup.lib)
+  writeSkill(setup.root, '.claude/skills', 'beta')
+  const previewId = await previewAdd(setup, ['alpha'])
+  await setup.worker.request('op.start', ADD(previewId, ['alpha']))
+  await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source') })
+  assert.ok(logged('op=preview error=busy'))
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' } })
+  assert.ok(logged('op=remove folder=beta error=busy'))
+  gate.release()
+  await settled(setup.worker)
+
+  setup.focus('identity:none', [])
+  await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source') })
+  assert.ok(logged('op=preview error=no-workspace'))
+  await setup.worker.deactivate()
+})
+
+test('a search that fails in an unexpected way is logged before it is rethrown', async () => {
+  const broken = (async () => ({
+    get ok(): boolean {
+      throw new Error('weird response')
+    }
+  })) as unknown as typeof fetch
+  const setup = await boot({ deps: { fetch: broken } })
+  await assert.rejects(setup.worker.request('search', { query: 'alp' }))
+  assert.ok(setup.worker.logs.some((line) => line.includes('search failed: weird response')))
+  await setup.worker.deactivate()
+})
+
+test('an add that throws after its trial disposes the trial and keeps the preview', async () => {
+  const setup = await boot()
+  const previewId = await previewAdd(setup, ['alpha'])
+  const original = setup.lib.stage.bind(setup.lib)
+  let trialsDisposed = 0
+  setup.lib.stage = async (...args) => {
+    const real = await original(...args)
+    return {
+      get staged(): never {
+        throw new Error('staged list unreadable')
+      },
+      dispose: async () => {
+        trialsDisposed++
+        await real.dispose()
+      }
+    }
+  }
+  const answer = await setup.worker.request('op.start', ADD(previewId, ['alpha']))
+  assert.equal(answer.ok, false)
+  if (!answer.ok) assert.equal(answer.error.code, 'lib')
+  assert.equal(trialsDisposed, 1, 'the trial folder is released')
+  assert.equal((await stateOf(setup.worker)).busy, null)
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=add') && line.includes('error=lib')))
+
+  // L'aperçu est toujours là : le même ajout, l'essai rétabli, réussit.
+  setup.lib.stage = original
+  assert.equal((await setup.worker.request('op.start', ADD(previewId, ['alpha']))).ok, true)
+  assert.equal((await settled(setup.worker)).ok, true)
+  await setup.worker.deactivate()
+})
+
+test('a gesture whose exclusions cannot be written still succeeds, with a warning', async () => {
+  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
+  writeSkill(setup.root, '.agents/skills', 'alpha')
+  setup.controls.failStorageSet = true
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' } })
+  const finished = await settled(setup.worker)
+  assert.equal(finished.ok, true)
+  assert.deepEqual(
+    finished.warnings.map((warning) => warning.code),
+    ['PLUGIN_EXCLUSIONS_FAILED']
+  )
+  assert.ok(setup.worker.logs.some((line) => line.includes('PLUGIN_EXCLUSIONS_FAILED')))
+  assert.equal((await stateOf(setup.worker)).busy, null)
   await setup.worker.deactivate()
 })
 

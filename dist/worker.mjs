@@ -22108,15 +22108,18 @@ var isRemoteHost = (hostId) => hostId !== null && (hostId.startsWith("ssh:") || 
 async function isLinkedWorktree(root) {
   return (await lstat6(join8(root, ".git")).catch(() => null))?.isFile() ?? false;
 }
-async function resolveWorkspace(call, home2) {
+async function resolveWorkspace(call, home2, log2 = () => {}) {
   const context = await call("workspace.readContext", {});
   const id = context?.workspaceId;
   if (!context || !id)
     return { view: { status: "none" } };
-  const { workspaces } = await call("workspace.list", {});
+  const { workspaces, truncated } = await call("workspace.list", {});
   const row = workspaces.find((candidate) => candidate.id === id);
-  if (!row)
+  if (!row) {
+    if (truncated)
+      log2("workspace not found in a truncated workspace.list, treated as none");
     return { view: { status: "none" } };
+  }
   if (isRemoteHost(row.hostId))
     return { view: { status: "remote" } };
   const real = await realpath5(row.path).catch(() => null);
@@ -22142,6 +22145,10 @@ var PREVIEW_TTL_MS = 10 * 60000;
 var messageOf = (error) => error instanceof Error ? error.message : String(error);
 var codeOf = (error) => toLibDiagnostic(error).code;
 var libFailure = (error) => ({ code: "lib", diagnostics: [toLibDiagnostic(error)] });
+function describeError(error) {
+  const codes = (error.diagnostics ?? []).map((diagnostic) => diagnostic.code).join(",");
+  return `error=${error.code}${codes ? ` lib=${codes}` : ""}${error.trashed ? " trashed" : ""}`;
+}
 var folderOf = (op) => op.kind === "add" ? op.names.join(",") : op.folder;
 var teardown = null;
 async function deactivate() {
@@ -22161,6 +22168,7 @@ function reusingTrial(lib, trial) {
 }
 async function activateWith(orca, deps) {
   const hostCall = orca.host.call.bind(orca.host);
+  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, (line) => orca.log(line));
   let inventory = null;
   let probing = null;
   let writing = Promise.resolve();
@@ -22231,7 +22239,7 @@ async function activateWith(orca, deps) {
     return spec ? [{ id, label: spec.label, icon: spec.icon, trust: TRUST_GATED[id] ?? null }] : [];
   });
   async function currentState(force = false) {
-    const focused = await resolveWorkspace(hostCall, deps.home);
+    const focused = await focusedWorkspace();
     const agents2 = await agentsOf(force);
     const base = {
       workspace: focused.view,
@@ -22284,12 +22292,15 @@ async function activateWith(orca, deps) {
   function pickByHit(source, skillId) {
     return source.skills.find((skill) => skill.name.toLowerCase() === skillId.toLowerCase()) ?? source.skills.find((skill) => sanitizeName2(skill.name) === sanitizeName2(skillId));
   }
-  async function previewSource(request) {
-    if (current?.kind === "add")
+  const addRunning = () => current?.kind === "add";
+  async function previewSource(request, signal) {
+    if (addRunning())
       return { ok: false, error: { code: "busy" } };
-    const focused = await resolveWorkspace(hostCall, deps.home);
+    const focused = await focusedWorkspace();
     if (!("root" in focused))
       return { ok: false, error: { code: "no-workspace" } };
+    if (addRunning())
+      return { ok: false, error: { code: "busy" } };
     const ticket = ++previewTicket;
     releasePreview();
     let input;
@@ -22321,7 +22332,7 @@ async function activateWith(orca, deps) {
       }
       skills = [{ name: hit.name, description: hit.description }];
     }
-    if (ticket !== previewTicket) {
+    if (signal.aborted || ticket !== previewTicket) {
       await source.dispose().catch(() => {
         return;
       });
@@ -22332,10 +22343,20 @@ async function activateWith(orca, deps) {
     preview = held;
     return { ok: true, previewId: held.id, label, skills, preselected: skills.map((skill) => skill.name) };
   }
-  orca.panels.handle("source.preview", (request) => previewSource(request));
+  orca.panels.handle("source.preview", async (request, context) => {
+    try {
+      const answer = await previewSource(request, context.signal);
+      if (!answer.ok)
+        orca.log(`op=preview ${describeError(answer.error)}`);
+      return answer;
+    } catch (error) {
+      orca.log(`op=preview failed: ${messageOf(error)}`);
+      throw error;
+    }
+  });
   async function installedKeys() {
     try {
-      const focused = await resolveWorkspace(hostCall, deps.home);
+      const focused = await focusedWorkspace();
       if (!("root" in focused))
         return new Set;
       const [scan, { lock }] = await Promise.all([scanWorkspace(focused.root), readLock(focused.root)]);
@@ -22361,8 +22382,10 @@ ${entry.source}`);
       return { ok: true, hits: hits.map((hit) => ({ ...hit, installed: installed.has(`${hit.skillId}
 ${hit.source}`) })) };
     } catch (error) {
-      if (!(error instanceof SearchError))
+      if (!(error instanceof SearchError)) {
+        orca.log(`search failed: ${messageOf(error)}`);
         throw error;
+      }
       orca.log(`search failed code=${error.code}`);
       return { ok: false, error: error.code };
     }
@@ -22378,8 +22401,7 @@ ${hit.source}`) })) };
     }
   });
   function logError(op, error) {
-    const codes = (error.diagnostics ?? []).map((diagnostic) => diagnostic.code).join(",");
-    orca.log(`op=${op.kind} folder=${folderOf(op)} error=${error.code}${codes ? ` lib=${codes}` : ""}${error.trashed ? " trashed" : ""}`);
+    orca.log(`op=${op.kind} folder=${folderOf(op)} ${describeError(error)}`);
   }
   function logWarnings(op, warnings) {
     for (const warning of warnings)
@@ -22414,24 +22436,31 @@ ${hit.source}`) })) };
       });
       return { error };
     };
-    const unsafe = new Set((await scanWorkspace(ctx.root)).unsafeDirs);
-    const dirs = ctx.writeDirs.filter((dir) => !unsafe.has(dir));
-    const colliding = [];
-    for (const { folder } of trial.staged) {
-      for (const dir of dirs) {
-        if (await lstat7(join9(ctx.root, dir, folder)).catch(() => null) === null)
-          continue;
-        if (!colliding.includes(folder))
-          colliding.push(folder);
+    try {
+      const unsafe = new Set((await scanWorkspace(ctx.root)).unsafeDirs);
+      const dirs = ctx.writeDirs.filter((dir) => !unsafe.has(dir));
+      const colliding = [];
+      for (const { folder } of trial.staged) {
+        for (const dir of dirs) {
+          if (await lstat7(join9(ctx.root, dir, folder)).catch(() => null) === null)
+            continue;
+          if (!colliding.includes(folder))
+            colliding.push(folder);
+        }
       }
+      if (colliding.length > 0) {
+        if (!op.replace)
+          return await refuse({ code: "collision", folders: colliding });
+        if (!ctx.trash)
+          return await refuse({ code: "no-trash" });
+      }
+      return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } };
+    } catch (error) {
+      await trial.dispose().catch(() => {
+        return;
+      });
+      throw error;
     }
-    if (colliding.length > 0) {
-      if (!op.replace)
-        return refuse({ code: "collision", folders: colliding });
-      if (!ctx.trash)
-        return refuse({ code: "no-trash" });
-    }
-    return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } };
   }
   function runOp(op, ctx, held) {
     switch (op.kind) {
@@ -22456,21 +22485,23 @@ ${hit.source}`) })) };
     } catch (error) {
       result = { ok: false, error: libFailure(error) };
     }
-    if (op.kind === "add")
+    if (op.kind === "add" && held && preview === held)
       releasePreview();
+    const extra = [];
     try {
       const change = result.ok ? exclusionChange(op, result, projectKey) : null;
       if (change)
         await updateExclusions(change);
     } catch (error) {
-      orca.log(`exclusions failed: ${messageOf(error)}`);
+      orca.log(`op=${op.kind} folder=${folderOf(op)} warning=PLUGIN_EXCLUSIONS_FAILED`);
+      extra.push({ code: "PLUGIN_EXCLUSIONS_FAILED", message: messageOf(error) });
     }
     if (result.ok)
       logWarnings(op, result.warnings);
     else
       logError(op, result.error);
     current = null;
-    const finished = result.ok ? { opId, op, ok: true, warnings: result.warnings } : { opId, op, ok: false, error: result.error, warnings: [] };
+    const finished = result.ok ? { opId, op, ok: true, warnings: [...result.warnings, ...extra] } : { opId, op, ok: false, error: result.error, warnings: [] };
     orca.panels.post("op.finished", finished);
     await postStateSafely();
   }
@@ -22479,7 +22510,7 @@ ${hit.source}`) })) };
       logError(op, error);
       return { ok: false, error };
     };
-    const focused = await resolveWorkspace(hostCall, deps.home);
+    const focused = await focusedWorkspace();
     if (!("root" in focused))
       return refuse({ code: "no-workspace" });
     const agents2 = await agentsOf();
@@ -22499,7 +22530,13 @@ ${hit.source}`) })) };
         return refuse({ code: "preview-expired" });
       if (held.timer)
         clearTimeout(held.timer);
-      const prepared = await prepareAdd(op, ctx, held);
+      let prepared;
+      try {
+        prepared = await prepareAdd(op, ctx, held);
+      } catch (error) {
+        armPreview(held);
+        return refuse(libFailure(error));
+      }
       if ("error" in prepared) {
         armPreview(held);
         return refuse(prepared.error);
@@ -22514,14 +22551,19 @@ ${hit.source}`) })) };
     return { ok: true, opId };
   }
   orca.panels.handle("op.start", async ({ op }) => {
-    if (current)
+    if (current) {
+      logError(op, { code: "busy" });
       return { ok: false, error: { code: "busy" } };
+    }
     current = op;
     let started = false;
     try {
       const answer = await startOp(op);
       started = answer.ok;
       return answer;
+    } catch (error) {
+      orca.log(`op=${op.kind} folder=${folderOf(op)} failed: ${messageOf(error)}`);
+      throw error;
     } finally {
       if (!started)
         current = null;
