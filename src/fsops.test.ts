@@ -84,6 +84,25 @@ test('copySkill never creates symlinks and skips links that leave the skill', as
   await assert.rejects(lstat(join(target, 'loop')), hasCode('ENOENT'))
 })
 
+test('a copy hashes equal to its source, nested links included', async () => {
+  const root = tempDir('copy-hash')
+  const source = writeSkill(root, 'lib', 'x', 'name: x', 'Hello\n')
+  await writeFile(join(root, 'outside.txt'), 'secret')
+  await mkdir(join(source, 'docs'))
+  await writeFile(join(source, 'real.txt'), 'inside')
+  await symlink('real.txt', join(source, 'alias.txt'))
+  await symlink('../real.txt', join(source, 'docs', 'up.txt'))
+  await symlink(join(root, 'outside.txt'), join(source, 'escape.txt'))
+  await symlink('docs', join(source, 'dirlink'))
+  await symlink('missing.txt', join(source, 'broken.txt'))
+  await symlink('.', join(source, 'loop'))
+  const target = join(root, 'out', 'x')
+  await copySkill(source, target)
+  assert.equal(await contentHash(target), await contentHash(source))
+  await writeFile(join(source, 'real.txt'), 'changed')
+  assert.notEqual(await contentHash(source), await contentHash(target), 'a link target change shows in the hash')
+})
+
 test('copySkill refuses an existing destination', async () => {
   const root = tempDir('copy-exists')
   const source = writeSkill(root, 'lib', 'x')

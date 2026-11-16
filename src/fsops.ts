@@ -1,6 +1,6 @@
 // Opérations disque sur une skill : empreinte de contenu et copie réelle (jamais de lien créé).
 import { createHash } from 'node:crypto'
-import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rm, stat } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { isInside } from './paths'
 
@@ -8,11 +8,20 @@ const IGNORED = '.DS_Store'
 const MAX_DEPTH = 24
 
 /**
- * Empreinte SHA-256 d'une skill : chemins relatifs triés et octets des fichiers, `.DS_Store` exclu. Un lien à
- * l'intérieur est haché par sa cible textuelle (jamais suivi : pas de cycle), les niveaux au-delà de 24 sont ignorés.
+ * Empreinte SHA-256 d'une skill : chemins relatifs triés et octets des fichiers, `.DS_Store` exclu, niveaux au-delà de
+ * 24 ignorés. Elle suit exactement les règles de `copySkill` : un lien vers un fichier de la skill compte comme un
+ * fichier (octets de la cible), tout lien que la copie ignorerait (sort de la skill, dossier, cassé, boucle) est
+ * ignoré aussi. Une copie réelle a donc la même empreinte que sa source.
  */
 export async function contentHash(dir: string): Promise<string> {
   const hash = createHash('sha256')
+  const source = await realpath(dir)
+  const addFile = async (rel: string, file: string): Promise<void> => {
+    const bytes = await readFile(file)
+    hash.update(`F\0${rel}\0${bytes.length}\0`)
+    hash.update(bytes)
+    hash.update('\0')
+  }
   async function walk(current: string, prefix: string, depth: number): Promise<void> {
     const names = (await readdir(current)).filter((name) => name !== IGNORED).sort()
     for (const name of names) {
@@ -20,15 +29,15 @@ export async function contentHash(dir: string): Promise<string> {
       const rel = prefix === '' ? name : `${prefix}/${name}`
       const info = await lstat(full)
       if (info.isSymbolicLink()) {
-        hash.update(`L\0${rel}\0${await readlink(full)}\0`)
+        const real = await realpath(full).catch(() => null)
+        if (real === null || !isInside(real, source)) continue
+        if ((await stat(real)).isFile()) await addFile(rel, real)
       } else if (info.isDirectory()) {
         if (depth + 1 > MAX_DEPTH) continue
         hash.update(`D\0${rel}\0`)
         await walk(full, rel, depth + 1)
       } else if (info.isFile()) {
-        hash.update(`F\0${rel}\0${info.size}\0`)
-        hash.update(await readFile(full))
-        hash.update('\0')
+        await addFile(rel, full)
       }
     }
   }

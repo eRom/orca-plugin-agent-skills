@@ -17,7 +17,8 @@ export function parseFrontmatter(text: string): Frontmatter {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/)
   if (lines[0]?.trimEnd() !== '---') return {}
   const end = lines.findIndex((line, index) => index > 0 && line.trimEnd() === '---')
-  const block = lines.slice(1, end === -1 ? undefined : end)
+  if (end === -1) return {} // pas de `---` de fermeture : ce qui suit est du corps, pas du front matter
+  const block = lines.slice(1, end)
   const result: Frontmatter = {}
   for (let i = 0; i < block.length; i++) {
     const line = block[i]!

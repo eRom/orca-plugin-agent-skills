@@ -24,6 +24,10 @@ test('ignores keys that live in the body, after the closing fence', () => {
   assert.deepEqual(parseFrontmatter('---\nname: a\n---\ndescription: not me\n'), { name: 'a' })
 })
 
+test('returns nothing when the closing fence is missing', () => {
+  assert.deepEqual(parseFrontmatter('---\nname: a\ndescription: b\nstill the body'), {})
+})
+
 test('returns nothing without front matter', () => {
   assert.deepEqual(parseFrontmatter('no front matter'), {})
   assert.deepEqual(parseFrontmatter('name: x\ndescription: y'), {})

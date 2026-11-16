@@ -1,5 +1,5 @@
 // Balayage des dossiers gérés : tout se passe dans des projets temporaires.
-import { mkdir, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { contentHash } from './fsops'
@@ -177,4 +177,55 @@ test('skips a broken link', async () => {
     skills.map((skill) => skill.folder),
     ['alive']
   )
+})
+
+test('flags a managed dir aliased to the published skills dir of the project', async () => {
+  const root = tempDir('scan-alias-published')
+  writeSkill(root, 'skills', 'x')
+  await mkdir(join(root, '.claude'))
+  await symlink('../skills', join(root, '.claude/skills'))
+  const { skills, unsafeDirs } = await scanWorkspace(root)
+  assert.deepEqual(unsafeDirs, ['.claude/skills'])
+  assert.deepEqual(skills, [])
+})
+
+test('flags a managed dir aliased to another managed dir, without doubling skills', async () => {
+  const root = tempDir('scan-alias-managed')
+  writeSkill(root, '.agents/skills', 'x')
+  await mkdir(join(root, '.claude'))
+  await symlink('../.agents/skills', join(root, '.claude/skills'))
+  const { skills, unsafeDirs } = await scanWorkspace(root)
+  assert.deepEqual(unsafeDirs, ['.claude/skills'])
+  assert.equal(skills.length, 1)
+  assert.deepEqual(
+    skills[0]!.copies.map((copy) => copy.dir),
+    ['.agents/skills']
+  )
+})
+
+test('flags a managed dir whose parent dir is a link inside the project', async () => {
+  const root = tempDir('scan-alias-parent')
+  writeSkill(root, 'shared/skills', 'x')
+  await symlink('shared', join(root, '.claude'))
+  const { skills, unsafeDirs } = await scanWorkspace(root)
+  assert.deepEqual(unsafeDirs, ['.claude/skills'])
+  assert.deepEqual(skills, [])
+})
+
+test('skips an entry that cannot be read and keeps listing the others', async () => {
+  const root = tempDir('scan-unreadable')
+  writeSkill(root, '.claude/skills', 'good')
+  const locked = writeSkill(root, '.claude/skills', 'locked')
+  writeSkill(root, '.claude/skills', 'also-good')
+  const skillFile = join(locked, 'SKILL.md')
+  await chmod(skillFile, 0o000)
+  try {
+    const { skills } = await scanWorkspace(root)
+    assert.deepEqual(
+      skills.map((skill) => skill.folder),
+      ['also-good', 'good']
+    )
+  } finally {
+    await chmod(skillFile, 0o644)
+  }
 })
