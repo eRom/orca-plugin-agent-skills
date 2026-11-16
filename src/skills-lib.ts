@@ -39,20 +39,29 @@ export type SkillsLib = {
     },
   ): Promise<{ failed: LibDiagnostic[] }>
   lockEntries(cwd: string): Promise<Map<string, LockEntry>>
+  /**
+   * Efface les skills du lock et les copies des agents visés. Attention : `removeSkills` fait aussi `rm -rf` de la copie
+   * canonique `.agents/skills/<nom>` dès qu'aucun agent détecté non visé ne détient encore la skill, quels que soient
+   * les `agents` passés, et il suit les liens symboliques. L'appelant met donc d'abord à la Corbeille toutes les copies
+   * gérées et ne passe que les agents de dossiers gérés ET sûrs (jamais un dossier qui sort du projet).
+   */
   untrack(libNames: readonly string[], cwd: string, libAgents: readonly string[]): Promise<{ failed: LibDiagnostic[] }>
 }
 
 /** Code posé par ce plugin quand la bibliothèque garde l'entrée du lock (une copie survit chez un agent non visé). */
 export const PLUGIN_LOCK_KEPT = 'PLUGIN_LOCK_KEPT'
 
+/** Code posé par ce plugin quand `stage` n'a pas déposé toutes les skills demandées. */
+export const PLUGIN_STAGE_INCOMPLETE = 'PLUGIN_STAGE_INCOMPLETE'
+
 /**
- * Traduit une erreur en diagnostic. Une erreur de la bibliothèque porte un `code` `SKILLS_*` ;
+ * Traduit une erreur en diagnostic. Une erreur de la bibliothèque porte un `code` `SKILLS_*` (ou `PLUGIN_*` si elle vient de ce module) ;
  * on le teste par typage de canard : `isDiagnostic(error)` sans code renvoie toujours `false`.
  */
 export function toLibDiagnostic(error: unknown): LibDiagnostic {
   const message = error instanceof Error ? error.message : String(error)
   const code = (error as { code?: unknown } | null)?.code
-  if (typeof code === 'string' && code.startsWith('SKILLS_')) return { code, message }
+  if (typeof code === 'string' && (code.startsWith('SKILLS_') || code.startsWith('PLUGIN_'))) return { code, message }
   return { code: 'UNKNOWN', message }
 }
 
@@ -91,11 +100,13 @@ async function readLockKeys(cwd: string): Promise<string[]> {
   } catch (error) {
     throw invalidLock(path, (error as Error).message)
   }
-  const skills = (parsed as { skills?: unknown } | null)?.skills
-  if (typeof skills !== 'object' || skills === null || Array.isArray(skills)) {
-    throw invalidLock(path, 'no "skills" object')
+  // Même validation que la bibliothèque : `version` numérique valant 1 ou 2, et un objet `skills`.
+  const lock = parsed as { version?: unknown; skills?: unknown } | null
+  if (typeof lock?.version !== 'number' || typeof lock.skills !== 'object' || lock.skills === null || Array.isArray(lock.skills)) {
+    throw invalidLock(path, 'expected an object with "version" and "skills"')
   }
-  return Object.keys(skills)
+  if (lock.version !== 1 && lock.version !== 2) throw invalidLock(path, `unsupported lock version ${lock.version}`)
+  return Object.keys(lock.skills)
 }
 
 function invalidLock(path: string, reason: string): Error {
@@ -140,7 +151,17 @@ export function createSkillsLib(api: SkillsApi): SkillsLib {
           telemetry: false,
           duplicates: 'error',
         })
+        // Un échec ou un oubli ne doit jamais passer pour un dépôt complet : on s'arrête avant d'écrire chez l'utilisateur.
+        const failure = result.failed[0]
+        if (failure) throw Object.assign(new Error(failure.message), { code: failure.code })
         const staged = result.installed.map((target) => ({ name: target.skill, folder: basename(target.path) }))
+        const requested = new Set(names).size
+        if (staged.length !== requested) {
+          throw Object.assign(
+            new Error(`Staged ${staged.length} of ${requested} requested skills (skipped: ${result.skipped.length})`),
+            { code: PLUGIN_STAGE_INCOMPLETE },
+          )
+        }
         return { staged, dispose: () => rm(root, { recursive: true, force: true }) }
       } catch (error) {
         await rm(root, { recursive: true, force: true })

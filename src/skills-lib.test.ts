@@ -75,6 +75,26 @@ test('stage reveals the sanitized folder names', async () => {
   }
 })
 
+test('stage refuses a request it cannot fully stage', async () => {
+  const cwd = tempDir('lib-stage-missing')
+  const source = await realSkillsLib.resolve(MULTI, cwd)
+  try {
+    const root = tempDir('lib-stage-missing-root')
+    // Un nom inconnu : la bibliothèque lève avant d'écrire.
+    await assert.rejects(realSkillsLib.stage(source, ['alpha', 'ghost'], root), hasDiagnosticCode('SKILLS_NO_MATCHING_SKILLS'))
+    // Deux noms distincts qui désignent la même skill : un seul dossier déposé, l'adaptateur refuse le dépôt incomplet.
+    await assert.rejects(realSkillsLib.stage(source, ['alpha', 'Alpha'], root), hasDiagnosticCode('PLUGIN_STAGE_INCOMPLETE'))
+    // Un nom répété reste un dépôt complet.
+    const { staged, dispose } = await realSkillsLib.stage(source, ['alpha', 'alpha'], root)
+    assert.deepEqual(staged, [{ name: 'alpha', folder: 'alpha' }])
+    await dispose()
+    // Aucun dossier d'essai ne reste après un refus.
+    assert.deepEqual(await readdir(root), [])
+  } finally {
+    await source.dispose()
+  }
+})
+
 test('install copies into the requested dirs and writes the lock', async () => {
   const cwd = tempDir('lib-install')
   const result = await installAlpha(cwd)
@@ -118,23 +138,36 @@ test('untrack leaves a same-named folder in an unmanaged dir alone', async () =>
   const result = await realSkillsLib.untrack(['alpha'], cwd, LIB_AGENTS)
   assert.equal(await isDir(vibe), true, 'the unmanaged copy survives')
   assert.match(await readFile(join(vibe, 'SKILL.md'), 'utf8'), /Mine/)
-  // Le lock est soit nettoyé, soit signalé : jamais silencieusement incohérent.
-  const kept = (await rawLockKeys(cwd)).includes('alpha')
-  if (kept) assert.equal(result.failed.some((failure) => failure.code === 'PLUGIN_LOCK_KEPT'), true)
-  else assert.deepEqual(result.failed, [])
+  // La copie `.vibe` (agent non visé) retient l'entrée du lock : la bibliothèque la garde, l'adaptateur le signale.
+  assert.equal((await rawLockKeys(cwd)).includes('alpha'), true)
+  assert.deepEqual(result.failed.map((failure) => failure.code), ['PLUGIN_LOCK_KEPT'])
 })
 
-test('untrack never touches a managed dir that links outside the project', async () => {
+/** Projet dont `.claude` pointe hors du projet et y contient une copie de `alpha` (disposition réelle de la bibliothèque). */
+async function projectLinkedOutside(): Promise<{ cwd: string; outsideCopy: string }> {
   const cwd = tempDir('lib-outside')
   const outside = tempDir('lib-outside-target')
   await installAlpha(cwd, ['universal'])
-  // `.claude` pointe hors du projet et contient une copie : elle ne doit jamais être effacée.
-  await mkdir(join(outside, '.claude/alpha'), { recursive: true })
-  await writeFile(join(outside, '.claude/alpha/SKILL.md'), '---\nname: alpha\ndescription: outside\n---\nOutside\n')
+  const outsideCopy = join(outside, '.claude/skills/alpha')
+  await mkdir(outsideCopy, { recursive: true })
+  await writeFile(join(outsideCopy, 'SKILL.md'), '---\nname: alpha\ndescription: outside\n---\nOutside\n')
   await symlink(join(outside, '.claude'), join(cwd, '.claude'))
-  await realSkillsLib.untrack(['alpha'], cwd, ['universal'])
-  assert.match(await readFile(join(outside, '.claude/alpha/SKILL.md'), 'utf8'), /Outside/)
-  assert.deepEqual(await readdir(join(outside, '.claude')), ['alpha'])
+  return { cwd, outsideCopy }
+}
+
+test('untrack never touches a managed dir that links outside the project', async () => {
+  const { cwd, outsideCopy } = await projectLinkedOutside()
+  const result = await realSkillsLib.untrack(['alpha'], cwd, ['universal'])
+  assert.match(await readFile(join(outsideCopy, 'SKILL.md'), 'utf8'), /Outside/)
+  // claude-code (non visé) détient encore la skill : la bibliothèque garde l'entrée et l'adaptateur le signale.
+  assert.equal((await rawLockKeys(cwd)).includes('alpha'), true)
+  assert.deepEqual(result.failed.map((failure) => failure.code), ['PLUGIN_LOCK_KEPT'])
+})
+
+test('untrack deletes through a link when its agent is targeted (callers must pass only safe dirs)', async () => {
+  const { cwd, outsideCopy } = await projectLinkedOutside()
+  await realSkillsLib.untrack(['alpha'], cwd, ['universal', 'claude-code'])
+  assert.equal(await exists(outsideCopy), false, 'the library follows the symlink: this is why callers filter agents')
 })
 
 test('a corrupt lock is reported as SKILLS_INVALID_LOCAL_LOCK', async () => {
@@ -144,6 +177,13 @@ test('a corrupt lock is reported as SKILLS_INVALID_LOCAL_LOCK', async () => {
   // Un JSON valide mais sans objet `skills` est refusé aussi.
   await writeFile(join(cwd, 'skills-lock.json'), '{"version":1}')
   await assert.rejects(realSkillsLib.lockEntries(cwd), hasDiagnosticCode('SKILLS_INVALID_LOCAL_LOCK'))
+  // Mêmes exigences que la bibliothèque : `version` obligatoire, valant 1 ou 2.
+  await writeFile(join(cwd, 'skills-lock.json'), '{"skills":{}}')
+  await assert.rejects(realSkillsLib.lockEntries(cwd), hasDiagnosticCode('SKILLS_INVALID_LOCAL_LOCK'))
+  await writeFile(join(cwd, 'skills-lock.json'), '{"version":99,"skills":{}}')
+  await assert.rejects(realSkillsLib.lockEntries(cwd), hasDiagnosticCode('SKILLS_INVALID_LOCAL_LOCK'))
+  await writeFile(join(cwd, 'skills-lock.json'), '{"version":2,"skills":{}}')
+  assert.equal((await realSkillsLib.lockEntries(cwd)).size, 0)
 })
 
 test('an absent lock gives an empty map', async () => {
@@ -182,6 +222,7 @@ test('a missing local path is a SKILLS_LOCAL_PATH_NOT_FOUND diagnostic', async (
 test('toLibDiagnostic keeps SKILLS_ codes and degrades anything else to UNKNOWN', () => {
   const coded = Object.assign(new Error('boom'), { code: 'SKILLS_NO_VALID_SKILLS' })
   assert.deepEqual(toLibDiagnostic(coded), { code: 'SKILLS_NO_VALID_SKILLS', message: 'boom' })
+  assert.deepEqual(toLibDiagnostic(Object.assign(new Error('mine'), { code: 'PLUGIN_STAGE_INCOMPLETE' })), { code: 'PLUGIN_STAGE_INCOMPLETE', message: 'mine' })
   assert.deepEqual(toLibDiagnostic(Object.assign(new Error('fs'), { code: 'ENOENT' })), { code: 'UNKNOWN', message: 'fs' })
   assert.deepEqual(toLibDiagnostic(new Error('plain')), { code: 'UNKNOWN', message: 'plain' })
   assert.deepEqual(toLibDiagnostic('text'), { code: 'UNKNOWN', message: 'text' })
