@@ -4,5 +4,8 @@ docs/superpowers/
 node_modules/
 .orca/
 .superpowers/
-.claude/notes/
+.claude/
+.agents/
+.grok/
+skills-lock.json
 dist-spike/
