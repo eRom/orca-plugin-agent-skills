@@ -6,6 +6,8 @@
 
 [Install](#install) · [Features](#features) · [Where skills are written](#where-skills-are-written) · [Access](#what-it-can-access) · [Limits](#requirements-and-limits) · [Development](#development)
 
+![The Skills panel: each skill of the project with the agents that read it, a warning for the agents it is missing for, beside a skills.sh search](media/cover.png)
+
 Every coding agent reads project skills from its own folder: `.claude/skills` for Claude, `.agents/skills` for Codex, Pi, Antigravity and DeepSeek Harness, `.grok/skills` for Grok, and so on. Adding a skill by hand means copying it into the right folders, and nothing tells you which agent is blind to it. Agent Skills adds a **Skills** panel that follows the focused workspace, lists the skills of the project and shows, per skill, which of the agents you enabled in Orca can see it.
 
 ## Install

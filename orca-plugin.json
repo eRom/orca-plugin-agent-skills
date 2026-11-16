@@ -7,6 +7,30 @@
   "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
   "repository": "https://github.com/eRom/orca-plugin-agent-skills",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "cover": {
+    "path": "media/cover.png",
+    "alt": "The Skills panel listing the project's skills with the agents that read each one, beside a skills.sh search result."
+  },
+  "screenshots": [
+    {
+      "path": "media/screenshot-light.png",
+      "alt": "The Skills panel in Orca's light theme: four skills, each with its source and agent icons, two with a warning.",
+      "caption": "Every agent at a glance"
+    },
+    {
+      "path": "media/screenshot-detail-dark.png",
+      "alt": "A skill's details in the dark theme: the folders that hold it, which agents read each one, and two diverging versions.",
+      "caption": "Copies that drifted apart",
+      "theme": "dark"
+    },
+    {
+      "path": "media/screenshot-detail-light.png",
+      "alt": "The same skill details in the light theme.",
+      "caption": "Copies that drifted apart",
+      "theme": "light"
+    }
+  ],
   "engines": { "orca": ">=1.4.259" },
   "execution": "trusted-worker",
   "pluginApi": 1,
