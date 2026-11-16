@@ -58,16 +58,24 @@ const WORKSPACE_CHANGED: OpError = { code: 'workspace-changed' }
 /** Vrai si l'espace focalisé est celui que le panneau montrait (même identifiant) : tout autre focus refuse le geste. */
 const isShownWorkspace = (focused: FocusedWorkspace, workspaceId: string): boolean => focused.view.status === 'ready' && focused.view.id === workspaceId
 
-/** Vrai si `path` est (ou se trouve sous) un dossier géré du projet : une source n'y est pas lue, un remplacement la mettrait à la Corbeille. */
-async function isInsideManagedDir(path: string, root: string): Promise<boolean> {
+/**
+ * Vrai si la source `path` recouvre les dossiers gérés du projet : elle est dessous, ou elle est la racine du projet, un
+ * de ses ancêtres, ou un ancêtre d'un dossier géré. La bibliothèque cherche des skills dans la source et dans chaque
+ * dossier de skills d'agent : une source qui les contient listerait les skills du projet, et un remplacement les
+ * mettrait à la Corbeille avant d'installer depuis la copie mise à la Corbeille.
+ */
+async function overlapsManagedDirs(path: string, root: string): Promise<boolean> {
   const rootReal = await realpath(root).catch(() => null)
   const pathReal = await realpath(path).catch(() => null)
   if (rootReal === null || pathReal === null) return false
+  // Racine du projet ou ancêtre de la racine : couvre aussi tout ancêtre d'un dossier géré situé sous la racine.
+  if (isInside(rootReal, pathReal)) return true
   for (const dir of MANAGED_DIRS) {
     const expected = join(rootReal, dir)
-    if (isInside(pathReal, expected)) return true
-    const dirReal = await realpath(expected).catch(() => null)
-    if (dirReal !== null && isInside(pathReal, dirReal)) return true
+    const candidates = [expected, await realpath(expected).catch(() => null)]
+    for (const candidate of candidates) {
+      if (candidate !== null && (isInside(pathReal, candidate) || isInside(candidate, pathReal))) return true
+    }
   }
   return false
 }
@@ -262,7 +270,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     if (request.kind === 'path') {
       input = resolveInputPath(request.text.trim(), focused.root, deps.home)
       if (!(await stat(input).catch(() => null))) return { ok: false, error: { code: 'path-not-found' } }
-      if (await isInsideManagedDir(input, focused.root)) return { ok: false, error: { code: 'source-in-project' } }
+      if (await overlapsManagedDirs(input, focused.root)) return { ok: false, error: { code: 'source-in-project' } }
       label = { kind: 'local', path: abbreviateHome(input, deps.home) }
     } else {
       input = request.source

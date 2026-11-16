@@ -376,8 +376,14 @@ export const cancelConfirmation = (): void => {
     wasReplace = current?.kind === 'replace'
     return null
   })
-  // Le « Remplacer » annulé a laissé le champ sur son chemin : la ligne « Ajouter depuis ce dossier » revient.
-  if (wasReplace && isPathInput(currentQuery.trim())) schedule(currentQuery, 0)
+  let checklistShown = false
+  update(addFlow, (flow) => {
+    checklistShown = flow !== null
+    return flow
+  })
+  // Le « Remplacer » annulé a laissé le champ sur son chemin : la ligne « Ajouter depuis ce dossier » revient, sauf si la
+  // liste à cases est affichée (relire le chemin l'effacerait avec ses cases).
+  if (wasReplace && !checklistShown && isPathInput(currentQuery.trim())) schedule(currentQuery, 0)
 }
 
 /** Tourne une fois avant le premier rendu ; ce qui est poussé dans `subscriptions` s'arrête avec le panneau. */

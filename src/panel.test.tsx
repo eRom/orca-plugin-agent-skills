@@ -1089,3 +1089,34 @@ test('unchecking a skill after a collision drops the replace question, the next 
   assert.equal(log.ops.filter((op) => op.kind === 'add' && op.replace).length, 0, 'nothing was replaced')
   await expectClean(view)
 })
+
+test('cancelling a replace keeps the checklist and its checks', async () => {
+  const { view, log } = await open({
+    preview: () => ({
+      ok: true,
+      previewId: 'p9',
+      label: { kind: 'local', path: '~/dev/tools/skills' },
+      skills: [
+        { name: 'alpha', description: '' },
+        { name: 'beta', description: '' },
+        { name: 'gamma', description: '' }
+      ],
+      preselected: ['alpha', 'beta', 'gamma']
+    }),
+    start: ({ op }) => (op.kind === 'add' && !op.replace ? { ok: false, error: { code: 'collision', folders: ['alpha'] } } : { ok: true, opId: 'op-x' })
+  })
+  await view.type(SEARCH_FIELD, '~/dev/tools/skills')
+  await afterPause(view)
+  await view.press({ testId: 'read-path' })
+  await view.toggle({ label: 'gamma' })
+  await view.press({ text: FR.addCount(2) })
+  assert.notEqual(view.find({ text: FR.replaceAsk('alpha') }), null)
+  await view.press({ text: FR.cancel })
+  assert.equal(view.find({ text: FR.replaceAsk('alpha') }), null)
+  assert.equal(view.valueOf({ label: 'alpha' }), true)
+  assert.equal(view.valueOf({ label: 'beta' }), true)
+  assert.equal(view.valueOf({ label: 'gamma' }), false)
+  assert.notEqual(view.find({ text: FR.addCount(2) }), null)
+  assert.equal(log.ops.length, 1, 'cancelling starts no gesture')
+  await expectClean(view)
+})

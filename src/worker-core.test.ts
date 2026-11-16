@@ -1047,10 +1047,15 @@ test('a source inside a managed folder of the project is refused before it is re
     return setup.lib.source([{ name: 'alpha' }])
   }
   const sub = writeSkill(setup.root, '.agents/skills', 'beta')
-  for (const text of [inside, sub, join(setup.root, '.claude/skills/alpha'), '.claude/skills']) {
+  // Dessous un dossier géré, ou le contenant : la racine du projet, `.claude`, `.`, le parent du projet.
+  const containing = ['.', './.claude', './.agents', '..', setup.root, join(setup.root, '..'), join(setup.root, '.claude'), join(setup.root, '.claude/skills')]
+  for (const text of [inside, sub, join(setup.root, '.claude/skills/alpha'), '.claude/skills', ...containing]) {
     assert.deepEqual(await setup.worker.request('source.preview', { kind: 'path', text, workspaceId: WS }), { ok: false, error: { code: 'source-in-project' } }, text)
   }
   assert.equal(resolved, 0)
+  assert.equal(setup.trash.trashed.length, 0)
+  assert.equal(setup.lib.calls.stage.length + setup.lib.calls.install.length, 0)
+  assert.ok(existsSync(join(setup.root, '.claude/skills/alpha')))
   assert.ok(setup.worker.logs.some((line) => line.includes('op=preview error=source-in-project')))
   // Un dossier du projet hors des dossiers gérés reste une source valable.
   const outside = join(setup.root, 'my-skills')

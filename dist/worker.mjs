@@ -22144,18 +22144,20 @@ function describeError(error) {
 var folderOf = (op) => op.kind === "add" ? op.names.join(",") : op.folder;
 var WORKSPACE_CHANGED = { code: "workspace-changed" };
 var isShownWorkspace = (focused, workspaceId) => focused.view.status === "ready" && focused.view.id === workspaceId;
-async function isInsideManagedDir(path2, root) {
+async function overlapsManagedDirs(path2, root) {
   const rootReal = await realpath6(root).catch(() => null);
   const pathReal = await realpath6(path2).catch(() => null);
   if (rootReal === null || pathReal === null)
     return false;
+  if (isInside(rootReal, pathReal))
+    return true;
   for (const dir of MANAGED_DIRS) {
     const expected = join9(rootReal, dir);
-    if (isInside(pathReal, expected))
-      return true;
-    const dirReal = await realpath6(expected).catch(() => null);
-    if (dirReal !== null && isInside(pathReal, dirReal))
-      return true;
+    const candidates = [expected, await realpath6(expected).catch(() => null)];
+    for (const candidate of candidates) {
+      if (candidate !== null && (isInside(pathReal, candidate) || isInside(candidate, pathReal)))
+        return true;
+    }
   }
   return false;
 }
@@ -22315,7 +22317,7 @@ async function activateWith(orca, deps) {
       input = resolveInputPath(request.text.trim(), focused.root, deps.home);
       if (!await stat4(input).catch(() => null))
         return { ok: false, error: { code: "path-not-found" } };
-      if (await isInsideManagedDir(input, focused.root))
+      if (await overlapsManagedDirs(input, focused.root))
         return { ok: false, error: { code: "source-in-project" } };
       label = { kind: "local", path: abbreviateHome(input, deps.home) };
     } else {
