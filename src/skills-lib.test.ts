@@ -1,10 +1,10 @@
 // Adaptateur de la bibliothèque `skills` : tests de la vraie bibliothèque, sources locales et projets temporaires seulement.
 import { lstat, mkdir, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import * as skills from 'skills'
-import { createSkillsLib, toLibDiagnostic, type LibDiagnostic } from './skills-lib'
+import { createSkillsLib, sanitizeName, toLibDiagnostic, type LibDiagnostic } from './skills-lib'
 import { tempDir } from './test-fixtures'
 
 /** La vraie bibliothèque, injectée : un fichier de test peut importer `skills`, le module de production non. */
@@ -64,6 +64,9 @@ test('stage reveals the sanitized folder names', async () => {
       assert.equal(byName.get('alpha'), 'alpha')
       assert.equal(byName.get('Beta Skill'), 'beta-skill')
       assert.equal(staged.length, 2)
+      // La règle d'assainissement partagée est celle de la vraie bibliothèque.
+      for (const entry of staged) assert.equal(entry.folder, sanitizeName(entry.name))
+      for (const entry of staged) assert.equal(await isDir(entry.path), true)
     } finally {
       await dispose()
     }
@@ -86,7 +89,12 @@ test('stage refuses a request it cannot fully stage', async () => {
     await assert.rejects(realSkillsLib.stage(source, ['alpha', 'Alpha'], root), hasDiagnosticCode('PLUGIN_STAGE_INCOMPLETE'))
     // Un nom répété reste un dépôt complet.
     const { staged, dispose } = await realSkillsLib.stage(source, ['alpha', 'alpha'], root)
-    assert.deepEqual(staged, [{ name: 'alpha', folder: 'alpha' }])
+    assert.deepEqual(
+      staged.map(({ name, folder }) => ({ name, folder })),
+      [{ name: 'alpha', folder: 'alpha' }]
+    )
+    assert.equal(await isDir(staged[0]!.path), true)
+    assert.equal(basename(staged[0]!.path), 'alpha')
     await dispose()
     // Aucun dossier d'essai ne reste après un refus.
     assert.deepEqual(await readdir(root), [])

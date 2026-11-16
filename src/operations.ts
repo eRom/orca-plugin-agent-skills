@@ -1,12 +1,12 @@
 // Gestes sur les skills du projet : ajouter, propager, garder une version, retirer, retirer d'un dossier.
 // Couche destructive : toute mise à la Corbeille ou tout écrasement dans le projet passe par le `Trasher` injecté, et
 // rien n'est jamais écrit ni retiré hors du projet (un dossier géré dont le chemin réel sort du projet est ignoré).
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm } from 'node:fs/promises'
+import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { copySkill } from './fsops'
 import { COPY_ONLY_DIRS, LIB_AGENT_BY_DIR, MANAGED_DIRS, targetDirOf, type ManagedDir } from './skill-dirs'
 import { scanWorkspace, type DiskSkill, type ScanResult } from './scan'
-import { PLUGIN_LOCK_KEPT, PLUGIN_STAGE_INCOMPLETE, toLibDiagnostic, type LibDiagnostic, type ResolvedSource, type SkillsLib } from './skills-lib'
+import { PLUGIN_LOCK_KEPT, PLUGIN_STAGE_INCOMPLETE, sanitizeName, toLibDiagnostic, type LibDiagnostic, type ResolvedSource, type SkillsLib } from './skills-lib'
 import type { Trasher } from './trash'
 import { buildRows, type LockEntry } from './visibility'
 
@@ -30,7 +30,7 @@ export type OpError = {
   trashed?: boolean
 }
 
-export type OpResult = { ok: true; warnings: LibDiagnostic[]; lostAgents: string[] } | { ok: false; error: OpError }
+export type OpResult = { ok: true; warnings: LibDiagnostic[]; lostAgents: string[]; removedAll?: boolean } | { ok: false; error: OpError }
 
 export type OpContext = {
   root: string
@@ -109,15 +109,6 @@ async function moveToTrash(trash: Trasher, paths: readonly string[]): Promise<Op
   }
 }
 
-/** Dossier réel de la skill déposée par `stage` : `<racine d'essai>/.agents/skills/<dossier>` (agent universel). */
-async function stagedPathOf(work: string, folder: string): Promise<string> {
-  for (const entry of await readdir(work)) {
-    const candidate = join(work, entry, '.agents/skills', folder)
-    if ((await lstat(candidate).catch(() => null))?.isDirectory()) return candidate
-  }
-  throw Object.assign(new Error(`Staged skill ${folder} was not found in the staging dir`), { code: PLUGIN_STAGE_INCOMPLETE })
-}
-
 const isPlainFolderName = (folder: string): boolean => folder !== '' && folder !== '.' && folder !== '..' && basename(folder) === folder
 
 /**
@@ -148,17 +139,17 @@ export async function addSkills(
   }
 
   await mkdir(ctx.tmpdir, { recursive: true })
-  const work = await mkdtemp(join(ctx.tmpdir, 'op-'))
   let disposeStage: (() => Promise<void>) | null = null
   try {
     let stage: Awaited<ReturnType<SkillsLib['stage']>>
     try {
-      stage = await ctx.lib.stage(source, names, work)
+      stage = await ctx.lib.stage(source, names, ctx.tmpdir)
     } catch (error) {
       return fail(libError(error))
     }
     disposeStage = stage.dispose
-    const folders = [...new Set(stage.staged.map((entry) => entry.folder))]
+    const stagedPaths = new Map(stage.staged.map((entry) => [entry.folder, entry.path]))
+    const folders = [...stagedPaths.keys()]
     if (folders.some((folder) => !isPlainFolderName(folder))) {
       return fail(libError(Object.assign(new Error('The library returned an invalid folder name'), { code: PLUGIN_STAGE_INCOMPLETE })))
     }
@@ -201,7 +192,7 @@ export async function addSkills(
     try {
       for (const folder of folders) {
         // Les dossiers que la bibliothèque ne connaît pas sont copiés depuis la première copie installée, à défaut depuis l'essai.
-        const from = libDirs.length > 0 ? join(ctx.root, libDirs[0]!, folder) : await stagedPathOf(work, folder)
+        const from = libDirs.length > 0 ? join(ctx.root, libDirs[0]!, folder) : stagedPaths.get(folder)!
         for (const dir of copyDirs) await copySkill(from, join(ctx.root, dir, folder))
       }
     } catch (error) {
@@ -210,7 +201,6 @@ export async function addSkills(
     return done(warnings)
   } finally {
     await disposeStage?.().catch(() => {})
-    await rm(work, { recursive: true, force: true })
   }
 }
 
@@ -276,7 +266,9 @@ export async function keepVersion(ctx: OpContext, folder: string, hash: string):
 /**
  * Retire la skill du projet : toutes les copies gérées (liens compris) vont à la Corbeille, puis, si la skill est dans
  * le lock, `untrack`. `untrack` ne reçoit que les agents des dossiers sûrs et jamais rien si `.agents/skills` est
- * dangereux : la bibliothèque y fait un `rm -rf` définitif qui suit les liens.
+ * dangereux : la bibliothèque y fait un `rm -rf` définitif qui suit les liens. Elle supprime `<dossier>/<nom assaini du lock>` pour
+ * chaque agent passé : on ne l'appelle donc que si ce nom est celui du dossier retiré, et après avoir mis à la Corbeille
+ * tout ce qui occupe encore ces chemins (une entrée que le balayage ne liste pas, sans SKILL.md par exemple).
  */
 export async function removeSkill(ctx: OpContext, folder: string): Promise<OpResult> {
   if (!ctx.trash) return fail({ code: 'no-trash' })
@@ -303,9 +295,27 @@ export async function removeSkill(ctx: OpContext, folder: string): Promise<OpRes
   )
   if (trashError) return fail(trashError)
   if (!entry || agentsUnsafe) return done(warnings)
+  if (sanitizeName(entry.libName) !== folder) {
+    // Le lock suit une autre skill (même nom de métadonnées, autre dossier) : `untrack` effacerait ses copies.
+    warnings.push({
+      code: PLUGIN_LOCK_KEPT,
+      message: `The lock entry for ${entry.libName} was kept: it belongs to another folder than ${folder}`,
+      skill: entry.libName
+    })
+    return done(warnings)
+  }
 
   const unsafe = new Set(disk.unsafe)
-  const libAgents = MANAGED_DIRS.filter((dir) => !unsafe.has(dir)).flatMap((dir) => LIB_AGENT_BY_DIR[dir] ?? [])
+  const libDirs = MANAGED_DIRS.filter((dir) => !unsafe.has(dir) && LIB_AGENT_BY_DIR[dir] !== undefined)
+  const libAgents = libDirs.map((dir) => LIB_AGENT_BY_DIR[dir]!)
+  // Ce que `untrack` supprimerait pour de bon : tout ce qui occupe encore `<dossier sûr>/<dossier>` va d'abord à la Corbeille.
+  const leftovers: string[] = []
+  for (const dir of new Set<ManagedDir>([...libDirs, '.agents/skills'])) {
+    const path = join(ctx.root, dir, folder)
+    if ((await lstat(path).catch(() => null)) !== null) leftovers.push(path)
+  }
+  const leftoverError = await moveToTrash(ctx.trash, leftovers)
+  if (leftoverError) return fail({ ...leftoverError, trashed: true })
   try {
     const { failed } = await ctx.lib.untrack([entry.libName], ctx.root, libAgents)
     // Une entrée gardée parce qu'une copie survit ailleurs est un avertissement, pas un échec.
@@ -318,7 +328,7 @@ export async function removeSkill(ctx: OpContext, folder: string): Promise<OpRes
   return done(warnings)
 }
 
-/** Retire la copie d'un seul dossier géré (jamais `untrack`) et dit quels agents actifs ne voient plus la skill. */
+/** Retire la copie d'un seul dossier géré (`untrack` seulement s'il ne reste aucune autre copie) et dit quels agents actifs ne voient plus la skill. */
 export async function removeFromDir(ctx: OpContext, folder: string, dir: ManagedDir): Promise<OpResult> {
   if (!ctx.trash) return fail({ code: 'no-trash' })
   const disk = await readDisk(ctx.root)
@@ -337,6 +347,11 @@ export async function removeFromDir(ctx: OpContext, folder: string, dir: Managed
   }
 
   const before = agentsSeeing(disk.scan, ctx, folder)
+  // Dernière copie : c'est un retrait complet (Corbeille puis `untrack` gardé), le panneau efface alors les exclusions.
+  if (skill.copies.length === 1) {
+    const removed = await removeSkill(ctx, folder)
+    return removed.ok ? { ...removed, lostAgents: before, removedAll: true } : removed
+  }
   const trashError = await moveToTrash(ctx.trash, [copy.path])
   if (trashError) return fail(trashError)
   const after = agentsSeeing(await scanWorkspace(ctx.root), ctx, folder)

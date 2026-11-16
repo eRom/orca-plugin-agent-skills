@@ -20,7 +20,16 @@ export type ResolvedSource = {
   dispose(): Promise<void>
 }
 
-export type StagedSkill = { name: string; folder: string }
+/** `path` : dossier réel de la skill déposée dans le dossier d'essai (source d'une copie). */
+export type StagedSkill = { name: string; folder: string; path: string }
+
+/**
+ * Nom de dossier que la bibliothèque donne à une skill (`sanitizeName` de `skills`, vérifié par sonde). Elle fait
+ * `rm -rf <dossier>/<ce nom>` à la suppression : un geste ne passe un nom à `untrack` que si ce nom est celui du dossier.
+ */
+export function sanitizeName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9._]+/g, '-').replace(/^[.\-]+|[.\-]+$/g, '').substring(0, 255) || 'unnamed-skill'
+}
 
 export type SkillsLib = {
   resolve(input: string, cwd: string): Promise<ResolvedSource>
@@ -154,7 +163,7 @@ export function createSkillsLib(api: SkillsApi): SkillsLib {
         // Un échec ou un oubli ne doit jamais passer pour un dépôt complet : on s'arrête avant d'écrire chez l'utilisateur.
         const failure = result.failed[0]
         if (failure) throw Object.assign(new Error(failure.message), { code: failure.code })
-        const staged = result.installed.map((target) => ({ name: target.skill, folder: basename(target.path) }))
+        const staged = result.installed.map((target) => ({ name: target.skill, folder: basename(target.path), path: target.path }))
         const requested = new Set(names).size
         if (staged.length !== requested) {
           throw Object.assign(

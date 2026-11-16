@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { contentHash } from './fsops'
 import { addSkills, keepVersion, propagate, removeFromDir, removeSkill, type OpContext, type OpResult } from './operations'
-import type { ManagedDir } from './skill-dirs'
+import { LIB_AGENT_BY_DIR, MANAGED_DIRS, type ManagedDir } from './skill-dirs'
 import { fakeSkillsLib, fakeTrasher, ROMAIN_AGENTS, tempDir, writeSkill } from './test-fixtures'
 
 const WRITE_DIRS: ManagedDir[] = ['.agents/skills', '.claude/skills', '.grok/skills', '.openclaude/skills']
@@ -299,9 +299,55 @@ test('removeSkill trashes every copy and untracks a locked skill', async () => {
     ['.agents/skills', '.claude/skills', '.grok/skills'].map((dir) => join(root, dir, 'alpha')).sort()
   )
   assert.deepEqual(lib.calls.untrack, [
-    { libNames: ['alpha'], cwd: root, libAgents: ['universal', 'claude-code', 'grok', 'kiro-cli', 'qoder', 'codebuddy', 'zcode', 'trae'] }
+    { libNames: ['alpha'], cwd: root, libAgents: MANAGED_DIRS.flatMap((dir) => LIB_AGENT_BY_DIR[dir] ?? []) }
   ])
   assert.equal(lib.lock.has('alpha'), false)
+})
+
+test('removeSkill never lets untrack delete another folder that shares the lock name', async () => {
+  const { root, lib, trash, ctx } = setup('remove-fork')
+  // `alpha` est suivie dans le lock ; `alpha-mine` est une copie écrite à la main dont le front matter dit aussi `name: alpha`.
+  writeSkill(root, '.grok/skills', 'alpha', 'name: alpha', 'Tracked\n')
+  writeSkill(root, '.claude/skills', 'alpha-mine', 'name: alpha', 'Mine\n')
+  lib.lock.set('alpha', { source: 'owner/repo', libName: 'alpha' })
+  lib.lock.set('alpha-mine', { source: 'owner/repo', libName: 'alpha' })
+  const result = success(await removeSkill(ctx, 'alpha-mine'))
+  assert.deepEqual(trash.trashed, [join(root, '.claude/skills/alpha-mine')])
+  assert.equal(lib.calls.untrack.length, 0)
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ['PLUGIN_LOCK_KEPT'])
+  assert.match(await skillText(root, '.grok/skills', 'alpha'), /Tracked/)
+  assert.equal(lib.lock.has('alpha'), true)
+})
+
+test('removeSkill trashes what untrack would delete for good and the scan does not list', async () => {
+  const { root, lib, trash, ctx } = setup('remove-leftover')
+  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
+  // Une entrée sans SKILL.md au nom de la skill, dans un dossier de la bibliothèque et dans la copie canonique.
+  for (const dir of ['.grok/skills', '.agents/skills']) {
+    await mkdir(join(root, dir, 'alpha'), { recursive: true })
+    await writeFile(join(root, dir, 'alpha/notes.txt'), `keep ${dir}`)
+  }
+  lib.lock.set('alpha', { source: 'owner/repo', libName: 'alpha' })
+  success(await removeSkill(ctx, 'alpha'))
+  assert.equal(lib.calls.untrack.length, 1)
+  for (const dir of ['.grok/skills', '.agents/skills']) {
+    const path = join(root, dir, 'alpha')
+    assert.equal(await exists(path), false)
+    assert.equal(await readFile(join(trash.moved.get(path)!, 'notes.txt'), 'utf8'), `keep ${dir}`)
+  }
+})
+
+test('removeSkill refuses on an unreadable lock before touching anything', async () => {
+  const { root, lib, trash, ctx } = setup('remove-bad-lock')
+  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
+  await writeFile(join(root, 'skills-lock.json'), '{ not json')
+  const error = failure(await removeSkill(ctx, 'alpha'))
+  assert.equal(error.code, 'lib')
+  assert.equal(error.diagnostics?.[0]?.code, 'SKILLS_INVALID_LOCAL_LOCK')
+  assert.equal(error.trashed, undefined)
+  assert.deepEqual(trash.trashed, [])
+  assert.equal(lib.calls.untrack.length, 0)
+  assert.equal(await exists(join(root, '.claude/skills/alpha')), true)
 })
 
 test('removeSkill trashes a handwritten skill without calling untrack', async () => {
@@ -396,6 +442,27 @@ test('removeFromDir reports the agents that lost the skill', async () => {
   assert.deepEqual(result.lostAgents, ['grok'])
   assert.deepEqual(trash.trashed, [join(root, '.grok/skills/alpha')])
   assert.equal(await exists(join(root, '.agents/skills/alpha')), true)
+  assert.equal(lib.calls.untrack.length, 0)
+})
+
+test('removeFromDir on the last copy is a full removal', async () => {
+  const { root, lib, trash, ctx } = setup('remove-from-dir-last')
+  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
+  lib.lock.set('alpha', { source: 'owner/repo', libName: 'alpha' })
+  const result = success(await removeFromDir(ctx, 'alpha', '.claude/skills'))
+  assert.equal(result.removedAll, true)
+  assert.deepEqual(result.lostAgents, ['claude', 'opencode'])
+  assert.deepEqual(trash.trashed, [join(root, '.claude/skills/alpha')])
+  assert.equal(lib.calls.untrack.length, 1)
+  assert.equal(lib.lock.has('alpha'), false)
+})
+
+test('removeFromDir with copies left does not report a full removal', async () => {
+  const { root, lib, ctx } = setup('remove-from-dir-not-last')
+  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
+  writeSkill(root, '.grok/skills', 'alpha', 'name: alpha')
+  const result = success(await removeFromDir(ctx, 'alpha', '.grok/skills'))
+  assert.equal(result.removedAll, undefined)
   assert.equal(lib.calls.untrack.length, 0)
 })
 

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { LIB_AGENT_BY_DIR } from './skill-dirs'
-import type { ResolvedSource, SkillsLib } from './skills-lib'
+import { sanitizeName, type ResolvedSource, type SkillsLib } from './skills-lib'
 import type { Trasher } from './trash'
 import type { LockEntry } from './visibility'
 
@@ -32,11 +32,6 @@ export function writeSkill(root: string, dir: string, folder: string, frontmatte
 }
 
 // Fausses dépendances des gestes : la bibliothèque `skills` et la Corbeille. Elles écrivent de vrais dossiers.
-
-/** Même règle d'assainissement que la vraie bibliothèque (vérifiée à la main dans les sondes de la tâche 6). */
-export function sanitizeName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9._]+/g, '-').replace(/^[.\-]+|[.\-]+$/g, '').substring(0, 255) || 'unnamed-skill'
-}
 
 export type FakeSkill = { name: string; description?: string; body?: string }
 
@@ -95,13 +90,14 @@ export function fakeSkillsLib(): FakeSkillsLib {
       lib.calls.stage.push({ names })
       const picked = pick(source, names)
       const root = join(tmpdir, `stage-fake-${stageCount++}`)
-      const staged = new Map<string, { name: string; folder: string }>()
+      const staged = new Map<string, { name: string; folder: string; path: string }>()
       for (const skill of picked) {
         const folder = sanitizeName(skill.name)
         // Même disposition que la vraie bibliothèque : agent universel, `.agents/skills/<dossier>`.
-        mkdirSync(join(root, '.agents/skills', folder), { recursive: true })
-        writeFileSync(join(root, '.agents/skills', folder, 'SKILL.md'), skillFile(skill))
-        staged.set(folder, { name: skill.name, folder })
+        const path = join(root, '.agents/skills', folder)
+        mkdirSync(path, { recursive: true })
+        writeFileSync(join(path, 'SKILL.md'), skillFile(skill))
+        staged.set(folder, { name: skill.name, folder, path })
       }
       return { staged: [...staged.values()], dispose: async () => rmSync(root, { recursive: true, force: true }) }
     },
@@ -134,6 +130,11 @@ export function fakeSkillsLib(): FakeSkillsLib {
     },
     async untrack(libNames, cwd, libAgents) {
       lib.calls.untrack.push({ libNames, cwd, libAgents })
+      // Comme la vraie bibliothèque : `rm -rf <dossier>/<nom assaini>` pour chaque agent passé, plus la copie canonique.
+      const dirs = Object.entries(LIB_AGENT_BY_DIR).filter(([, agent]) => libAgents.includes(agent)).map(([dir]) => dir)
+      for (const libName of libNames) {
+        for (const dir of new Set([...dirs, '.agents/skills'])) rmSync(join(cwd, dir, sanitizeName(libName)), { recursive: true, force: true })
+      }
       for (const [folder, entry] of lib.lock) if (libNames.includes(entry.libName)) lib.lock.delete(folder)
       return { failed: [] }
     }
