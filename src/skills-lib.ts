@@ -1,0 +1,182 @@
+// Adaptateur de la bibliothèque `skills` (logique pure, l'API est injectée : voir `SkillsApi`).
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { basename, join } from 'node:path'
+import type { SkillSource } from 'skills'
+import type { LockEntry } from './visibility'
+
+/**
+ * L'API de la bibliothèque `skills`, injectée : `orca plugin test` refuse un `import 'skills'` hors d'un fichier de test.
+ * Seul `skills-real.ts` l'importe à l'exécution (le worker est empaqueté) ; les tests injectent le vrai module.
+ */
+export type SkillsApi = Pick<typeof import('skills'), 'installSkills' | 'listSkills' | 'removeSkills' | 'resolveSource'>
+
+export type LibDiagnostic = { code: string; message: string; skill?: string; agent?: string }
+
+export type ResolvedSource = {
+  input: string
+  type: string
+  url: string
+  skills: readonly { name: string; description: string }[]
+  dispose(): Promise<void>
+}
+
+export type StagedSkill = { name: string; folder: string }
+
+export type SkillsLib = {
+  resolve(input: string, cwd: string): Promise<ResolvedSource>
+  stage(
+    source: ResolvedSource,
+    names: readonly string[],
+    tmpdir: string,
+  ): Promise<{ staged: StagedSkill[]; dispose(): Promise<void> }>
+  install(
+    source: ResolvedSource,
+    opts: {
+      cwd: string
+      names: readonly string[]
+      libAgents: readonly string[]
+      onWarning(w: LibDiagnostic): void
+    },
+  ): Promise<{ failed: LibDiagnostic[] }>
+  lockEntries(cwd: string): Promise<Map<string, LockEntry>>
+  untrack(libNames: readonly string[], cwd: string, libAgents: readonly string[]): Promise<{ failed: LibDiagnostic[] }>
+}
+
+/** Code posé par ce plugin quand la bibliothèque garde l'entrée du lock (une copie survit chez un agent non visé). */
+export const PLUGIN_LOCK_KEPT = 'PLUGIN_LOCK_KEPT'
+
+/**
+ * Traduit une erreur en diagnostic. Une erreur de la bibliothèque porte un `code` `SKILLS_*` ;
+ * on le teste par typage de canard : `isDiagnostic(error)` sans code renvoie toujours `false`.
+ */
+export function toLibDiagnostic(error: unknown): LibDiagnostic {
+  const message = error instanceof Error ? error.message : String(error)
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string' && code.startsWith('SKILLS_')) return { code, message }
+  return { code: 'UNKNOWN', message }
+}
+
+/** Les objets `SkillSource` de la bibliothèque, gardés hors de `ResolvedSource` pour qu'il reste un simple descripteur. */
+const librarySources = new WeakMap<ResolvedSource, SkillSource>()
+
+function libraryOf(source: ResolvedSource): SkillSource {
+  const library = librarySources.get(source)
+  if (!library) throw new Error('Source was not created by realSkillsLib.resolve')
+  return library
+}
+
+function toDiagnostic(failure: { code: string; message: string; skill?: string; agent?: string }): LibDiagnostic {
+  const out: LibDiagnostic = { code: failure.code, message: failure.message }
+  if (failure.skill !== undefined) out.skill = failure.skill
+  if (failure.agent !== undefined) out.agent = failure.agent
+  return out
+}
+
+/**
+ * Lit `<cwd>/skills-lock.json` : `listSkills` avale un lock illisible, on le refuse donc ici.
+ * Renvoie les clés du lock (vide si le fichier est absent).
+ */
+async function readLockKeys(cwd: string): Promise<string[]> {
+  const path = join(cwd, 'skills-lock.json')
+  let raw: string
+  try {
+    raw = await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw invalidLock(path, (error as Error).message)
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw invalidLock(path, (error as Error).message)
+  }
+  const skills = (parsed as { skills?: unknown } | null)?.skills
+  if (typeof skills !== 'object' || skills === null || Array.isArray(skills)) {
+    throw invalidLock(path, 'no "skills" object')
+  }
+  return Object.keys(skills)
+}
+
+function invalidLock(path: string, reason: string): Error {
+  return Object.assign(new Error(`Invalid skills lock ${path}: ${reason}`), { code: 'SKILLS_INVALID_LOCAL_LOCK' })
+}
+
+async function readLockEntries(api: SkillsApi, cwd: string): Promise<Map<string, LockEntry>> {
+  const entries = new Map<string, LockEntry>()
+  await readLockKeys(cwd)
+  const { skills } = await api.listSkills({ cwd, scope: 'project' })
+  for (const skill of skills) {
+    if (skill.source === undefined) continue
+    entries.set(basename(skill.path), { source: skill.source, libName: skill.name })
+  }
+  return entries
+}
+
+export function createSkillsLib(api: SkillsApi): SkillsLib {
+  return {
+    async resolve(input, cwd) {
+      const library = await api.resolveSource(input, { cwd })
+      const resolved: ResolvedSource = {
+        input: library.source.input,
+        type: library.source.type,
+        url: library.source.url,
+        skills: library.skills.map((skill) => ({ name: skill.name, description: skill.description })),
+        dispose: () => library.dispose(),
+      }
+      librarySources.set(resolved, library)
+      return resolved
+    },
+
+    async stage(source, names, tmpdir) {
+      const root = await mkdtemp(join(tmpdir, 'stage-'))
+      try {
+        const result = await api.installSkills(libraryOf(source), {
+          cwd: root,
+          skills: names,
+          agents: ['universal'],
+          mode: 'copy',
+          lockfile: false,
+          telemetry: false,
+          duplicates: 'error',
+        })
+        const staged = result.installed.map((target) => ({ name: target.skill, folder: basename(target.path) }))
+        return { staged, dispose: () => rm(root, { recursive: true, force: true }) }
+      } catch (error) {
+        await rm(root, { recursive: true, force: true })
+        throw error
+      }
+    },
+
+    async install(source, { cwd, names, libAgents, onWarning }) {
+      const result = await api.installSkills(libraryOf(source), {
+        cwd,
+        skills: names,
+        agents: libAgents,
+        mode: 'copy',
+        duplicates: 'error',
+        onWarning: (warning) => onWarning(toLibDiagnostic(warning)),
+      })
+      return { failed: result.failed.map(toDiagnostic) }
+    },
+
+    lockEntries: (cwd) => readLockEntries(api, cwd),
+
+    async untrack(libNames, cwd, libAgents) {
+      const result = await api.removeSkills(libNames, { cwd, scope: 'project', agents: libAgents })
+      const failed = result.failed.map(toDiagnostic)
+      // La bibliothèque garde l'entrée quand une copie survit chez un agent non visé : on le signale.
+      const remaining = new Set(await readLockKeys(cwd))
+      for (const name of libNames) {
+        if (remaining.has(name)) {
+          failed.push({
+            code: PLUGIN_LOCK_KEPT,
+            message: `The lock entry for ${name} was kept: a copy survives in a directory that was not targeted`,
+            skill: name,
+          })
+        }
+      }
+      return { failed }
+    },
+  }
+}
