@@ -185,6 +185,7 @@ export function createSkillsLib(api: SkillsApi): SkillsLib {
         agents: libAgents,
         mode: 'copy',
         duplicates: 'error',
+        telemetry: false,
         onWarning: (warning) => onWarning(toLibDiagnostic(warning)),
       })
       return { failed: result.failed.map(toDiagnostic) }
@@ -193,7 +194,7 @@ export function createSkillsLib(api: SkillsApi): SkillsLib {
     lockEntries: (cwd) => readLockEntries(api, cwd),
 
     async untrack(libNames, cwd, libAgents) {
-      const result = await api.removeSkills(libNames, { cwd, scope: 'project', agents: libAgents })
+      const result = await api.removeSkills(libNames, { cwd, scope: 'project', agents: libAgents, telemetry: false })
       const failed = result.failed.map(toDiagnostic)
       // La bibliothèque garde l'entrée quand une copie survit chez un agent non visé : on le signale.
       const remaining = new Set(await readLockKeys(cwd))

@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { basename, join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import * as skills from 'skills'
-import { createSkillsLib, sanitizeName, toLibDiagnostic, type LibDiagnostic } from './skills-lib'
+import { LIB_AGENT_BY_DIR } from './skill-dirs'
+import { createSkillsLib, sanitizeName, toLibDiagnostic, type LibDiagnostic, type SkillsApi } from './skills-lib'
 import { tempDir } from './test-fixtures'
 
 /** La vraie bibliothèque, injectée : un fichier de test peut importer `skills`, le module de production non. */
@@ -234,4 +235,44 @@ test('toLibDiagnostic keeps SKILLS_ codes and degrades anything else to UNKNOWN'
   assert.deepEqual(toLibDiagnostic(Object.assign(new Error('fs'), { code: 'ENOENT' })), { code: 'UNKNOWN', message: 'fs' })
   assert.deepEqual(toLibDiagnostic(new Error('plain')), { code: 'UNKNOWN', message: 'plain' })
   assert.deepEqual(toLibDiagnostic('text'), { code: 'UNKNOWN', message: 'text' })
+})
+
+test('every library agent of LIB_AGENT_BY_DIR exists in the real library and writes that very folder', () => {
+  const byId = new Map(skills.getSupportedAgents().map((agent) => [agent.id, agent.projectSkillsDir.replace(/\/+$/, '')]))
+  for (const [dir, agent] of Object.entries(LIB_AGENT_BY_DIR)) {
+    assert.ok(byId.has(agent!), `${agent} is not a supported agent of the library`)
+    assert.equal(byId.get(agent!), dir.replace(/\/+$/, ''), `${agent} writes ${byId.get(agent!)}, not ${dir}`)
+  }
+})
+
+test('every library call of the adapter turns the telemetry off', async () => {
+  const seen: { call: string; telemetry: unknown }[] = []
+  const spy: SkillsApi = {
+    ...skills,
+    installSkills: async (source, options) => {
+      seen.push({ call: 'installSkills', telemetry: options?.telemetry })
+      return skills.installSkills(source, options)
+    },
+    removeSkills: async (names, options) => {
+      seen.push({ call: 'removeSkills', telemetry: options?.telemetry })
+      return skills.removeSkills(names, options)
+    }
+  }
+  const lib = createSkillsLib(spy)
+  const cwd = tempDir('lib-telemetry')
+  const staging = tempDir('lib-telemetry-stage')
+  const source = await lib.resolve(MULTI, cwd)
+  try {
+    const trial = await lib.stage(source, ['alpha'], staging)
+    await trial.dispose()
+    await lib.install(source, { cwd, names: ['alpha'], libAgents: ['universal'], onWarning: () => {} })
+  } finally {
+    await source.dispose()
+  }
+  await lib.untrack(['alpha'], cwd, ['universal'])
+  assert.deepEqual(
+    seen.map((entry) => entry.call),
+    ['installSkills', 'installSkills', 'removeSkills']
+  )
+  for (const entry of seen) assert.equal(entry.telemetry, false, `${entry.call} must pass telemetry: false`)
 })

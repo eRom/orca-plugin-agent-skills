@@ -19,8 +19,7 @@ export default function activate(orca: OrcaWorkerApi): Promise<void> {
     trash: systemTrasher(process.platform, existsSync, execRunner),
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
-    // Surcharge prévue par la spec ; l'environnement du worker d'Orca est nettoyé, elle sert surtout aux essais à la main.
-    searchBase: process.env.SKILLS_API_URL ?? SKILLS_SH,
+    searchBase: SKILLS_SH,
     home: homedir(),
     tmpdir: tmpdir()
   })
