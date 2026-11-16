@@ -19,9 +19,9 @@ Orca shows the access the plugin asks for (see [What it can access](#what-it-can
 ## Features
 
 - **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`) and it offers to add from that folder. The folder button opens the macOS picker.
-- **One avatar per enabled agent on each skill**: full when the agent sees the skill, faded when it does not, grey when you removed it for that agent on purpose. Hover gives the folder it reads from.
-- **Propagate**: when an enabled agent does not see a skill, an orange banner says which ones, and one click copies the skill into the folder each of them reads. Clicking a single faded avatar does it for that agent only.
-- **Add** from a skills.sh result, a GitHub repository, or a local folder. A folder holding several skills opens a checklist, everything ticked by default.
+- **One icon per enabled agent on each skill**: full when the agent sees the skill, faded when it does not. An agent you removed the skill for on purpose has no icon: the row says "Excluded for X". The icons only display, every gesture is a button in the row.
+- **Propagate**: when an enabled agent does not see a skill, an orange banner says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
+- **Add** from a skills.sh result or a local folder (a pasted path, or the folder button). A typed `owner/repo` is a search, not an add: pick the result you want. A source holding several skills opens a checklist, everything ticked by default.
 - **Remove** a skill for every agent, or **remove here** from one folder (an expanded row lists the folders that carry a copy and the agents each one feeds). The confirmation names the agents that lose the skill and those that still see it through another folder. An agent that lost a skill this way is remembered as excluded for that skill (see [Exclusions](#exclusions)).
 - **Diverging copies** (the same skill, different content in two folders): the row says so, shows one version per distinct content, and **Keep this one** copies it over the others. Nothing is written before you choose.
 - **Replace safely**: adding a skill whose name already exists asks first, and the current copy goes to the Trash.
@@ -41,12 +41,12 @@ An addition writes into the **fewest folders** that cover your enabled agents, n
 - **The root `skills/` folder is never touched.** Some agents read it, but it is also where a repository publishes its own skill sources, and listing it would offer to remove the repository's content.
 - **Folders that agents read but the plugin does not manage** (`.cursor/skills`, `.codex/skills`, `.github/skills`, `.gemini/skills`, `.opencode/skills`...) are ignored: a skill that exists only there is not listed.
 - **Aider** reads no skills and never appears.
-- **Orca's agents not detected** (settings database missing, shell probe failed): the plugin writes into `.agents/skills` and `.claude/skills`, which cover 35 of Orca's 45 agents, shows no avatars, and says so in one line.
+- **Orca's agents not detected** (settings database missing, shell probe failed): the plugin writes into `.agents/skills` and `.claude/skills`, which cover 35 of Orca's 45 agents, shows no agent icons, and says so in one line.
 - A `skills-lock.json` is written at the root of the project by additions, as the `skills` CLI does. Propagate and the copies into folders the library does not know (`.openclaude`, `.prime`) leave it alone.
 
 ### Exclusions
 
-Removing a skill from one folder marks the agents that fed on it as **excluded** for that skill. Their avatar goes grey, no orange banner, and Propagate skips them. A click on the avatar offers **Reinstate**, which copies the skill back and lifts the exclusion. The disk wins: if an excluded agent sees the skill again (a copy made by hand), the exclusion drops. Exclusions are kept in the plugin's own storage, on this machine, per project (all its worktrees): they are not in the repository, your team does not see them.
+Removing a skill from one folder marks the agents that fed on it as **excluded** for that skill. They lose their icon, get no orange banner, and Propagate skips them. The expanded row offers **Reinstate X**, which copies the skill back and lifts the exclusion. The disk wins on display: an excluded agent that sees the skill again (a copy made by hand, or in another worktree) is shown as seeing it, but the exclusion itself stays stored and shows again if that copy goes away. It is lifted only by **Reinstate**, by **Propagate** for that agent, or by removing the skill everywhere. Exclusions are kept in the plugin's own storage, on this machine, per project (all its worktrees): they are not in the repository, your team does not see them.
 
 ### Symbolic links and safety
 
@@ -70,11 +70,11 @@ Beyond Orca's API, the worker:
 - **reads** Orca's settings database (`~/Library/Application Support/orca/profiles/<id>/profile-state.db`) to know which agents you disabled. It never writes to it.
 - **runs** a single `zsh -ilc` that looks up each known agent's executable with your real `PATH`, `/usr/bin/osascript` for the folder picker, and `/usr/bin/trash` for the Trash.
 - **writes** only in the project's managed folders listed above and in `skills-lock.json` at its root.
-- **makes network requests** to skills.sh for the search (`GET https://skills.sh/api/search`, overridable with `SKILLS_API_URL`), and, through the [`skills`](https://github.com/vercel-labs/skills) library, to the git host of a repository you add from.
+- **makes network requests** to skills.sh for the search (`GET https://skills.sh/api/search`), and, through the [`skills`](https://github.com/vercel-labs/skills) library, to the git host of a repository you add from.
 
 ### Telemetry of the `skills` library
 
-The plugin embeds the `skills` library, the engine of the `skills` CLI. On a successful **install or removal**, the library sends the same **anonymous usage telemetry** as the CLI. Per the library's documentation, repository and skill identifiers are sent only for repositories that GitHub confirms are public. The plugin collects nothing of its own and leaves this behaviour unchanged. To turn it off, set `DISABLE_TELEMETRY=1` or `DO_NOT_TRACK=1` in the environment Orca is launched from. What is collected: [library documentation](https://github.com/vercel-labs/skills/blob/main/docs/troubleshooting.md#telemetry).
+The plugin embeds the `skills` library, the engine of the `skills` CLI. By default the library sends **anonymous usage telemetry** on a successful install or removal, as the CLI does. **The plugin turns it off** on every call it makes to the library, so nothing is sent from the plugin, and it collects nothing of its own. What the library collects when it is on: [library documentation](https://github.com/vercel-labs/skills/blob/main/docs/troubleshooting.md#telemetry).
 
 ## Requirements and limits
 
@@ -83,7 +83,7 @@ The plugin embeds the `skills` library, the engine of the `skills` CLI. On a suc
 - **Remote workspaces** (SSH, runtime hosts) are not supported: the panel says so and offers no gesture. The home folder is refused as a project.
 - **No plugin API lists Orca's enabled agents**, so the plugin reads Orca's internal settings format. Toggling an agent in Settings > Agents is not picked up live: press ⟳ in the panel.
 - **The panel does not watch the disk.** It re-reads on open, on workspace change, after each gesture, and on ⟳.
-- **Two agents read project skills only after you approve the folder** (Hermes: `hermes skills trust`; Mistral Vibe: trusted folder). Their avatar says so in its tooltip.
+- **Two agents read project skills only after you approve the folder** (Hermes: `hermes skills trust`; Mistral Vibe: trusted folder). The row says so in its expanded view.
 - **No update command yet.** The lock keeps what is needed (source, type, hash); updating from the lock is planned for 1.x.
 - **skills.sh search uses an undocumented API**, the one the `skills` CLI uses. If it changes, the panel shows "skills.sh is not answering".
 - **Reading folders:** the table of agent reads must be re-verified before each release as agents change.
