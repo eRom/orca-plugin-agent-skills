@@ -21338,13 +21338,14 @@ function createSkillsLib(api) {
         agents: libAgents,
         mode: "copy",
         duplicates: "error",
+        telemetry: false,
         onWarning: (warning) => onWarning(toLibDiagnostic(warning))
       });
       return { failed: result.failed.map(toDiagnostic) };
     },
     lockEntries: (cwd) => readLockEntries(api, cwd),
     async untrack(libNames, cwd, libAgents) {
-      const result = await api.removeSkills(libNames, { cwd, scope: "project", agents: libAgents });
+      const result = await api.removeSkills(libNames, { cwd, scope: "project", agents: libAgents, telemetry: false });
       const failed = result.failed.map(toDiagnostic);
       const remaining = new Set(await readLockKeys(cwd));
       for (const name of libNames) {
@@ -21389,7 +21390,7 @@ function systemTrasher(platform2, exists, run) {
 
 // src/worker-core.ts
 import { randomUUID } from "node:crypto";
-import { lstat as lstat7, mkdir as mkdir4, stat as stat4 } from "node:fs/promises";
+import { lstat as lstat7, mkdir as mkdir4, realpath as realpath6, stat as stat4 } from "node:fs/promises";
 import { join as join9 } from "node:path";
 
 // src/exclusions.ts
@@ -21441,16 +21442,6 @@ function include(ex, projectKey, folder, agents2) {
   const current = excludedOf(ex, projectKey, folder);
   const left = agents2 ? current.filter((agent2) => !agents2.includes(agent2)) : [];
   return withAgents(ex, projectKey, folder, left);
-}
-function pruneSeen(ex, projectKey, rows) {
-  let next = ex;
-  for (const row of rows) {
-    const current = excludedOf(next, projectKey, row.folder);
-    const seen = row.agents.filter((a2) => a2.state === "sees" && current.includes(a2.agent)).map((a2) => a2.agent);
-    if (seen.length > 0)
-      next = include(next, projectKey, row.folder, seen);
-  }
-  return next;
 }
 
 // src/operations.ts
@@ -22132,6 +22123,7 @@ async function resolveWorkspace(call, home2, log2 = () => {}) {
     projectKey: row.projectId ?? row.id,
     view: {
       status: "ready",
+      id: row.id,
       name: row.name,
       branch: row.branch ?? (context.branch === "" ? null : context.branch),
       linkedWorktree: await isLinkedWorktree(row.path)
@@ -22150,6 +22142,23 @@ function describeError(error) {
   return `error=${error.code}${codes ? ` lib=${codes}` : ""}${error.trashed ? " trashed" : ""}`;
 }
 var folderOf = (op) => op.kind === "add" ? op.names.join(",") : op.folder;
+var WORKSPACE_CHANGED = { code: "workspace-changed" };
+var isShownWorkspace = (focused, workspaceId) => focused.view.status === "ready" && focused.view.id === workspaceId;
+async function isInsideManagedDir(path2, root) {
+  const rootReal = await realpath6(root).catch(() => null);
+  const pathReal = await realpath6(path2).catch(() => null);
+  if (rootReal === null || pathReal === null)
+    return false;
+  for (const dir of MANAGED_DIRS) {
+    const expected = join9(rootReal, dir);
+    if (isInside(pathReal, expected))
+      return true;
+    const dirReal = await realpath6(expected).catch(() => null);
+    if (dirReal !== null && isInside(pathReal, dirReal))
+      return true;
+  }
+  return false;
+}
 var teardown = null;
 async function deactivate() {
   await teardown?.();
@@ -22250,16 +22259,11 @@ async function activateWith(orca, deps) {
     if (!("root" in focused))
       return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current };
     const { root, projectKey } = focused;
-    return serialize(async () => {
-      const scan = await scanWorkspace(root);
-      const { lock, unreadable } = await readLock(root);
-      const stored = await readExclusions();
-      const rows = buildRows(scan, lock, agents2.active, (folder) => excludedOf(stored, projectKey, folder), deps.home);
-      const pruned = pruneSeen(stored, projectKey, rows);
-      if (pruned !== stored)
-        await writeExclusions(pruned);
-      return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current };
-    });
+    const scan = await scanWorkspace(root);
+    const { lock, unreadable } = await readLock(root);
+    const stored = await readExclusions();
+    const rows = buildRows(scan, lock, agents2.active, (folder) => excludedOf(stored, projectKey, folder), deps.home);
+    return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current };
   }
   async function postState() {
     const ticket = ++stateTicket;
@@ -22299,6 +22303,8 @@ async function activateWith(orca, deps) {
     const focused = await focusedWorkspace();
     if (!("root" in focused))
       return { ok: false, error: { code: "no-workspace" } };
+    if (!isShownWorkspace(focused, request.workspaceId))
+      return { ok: false, error: WORKSPACE_CHANGED };
     if (addRunning())
       return { ok: false, error: { code: "busy" } };
     const ticket = ++previewTicket;
@@ -22309,6 +22315,8 @@ async function activateWith(orca, deps) {
       input = resolveInputPath(request.text.trim(), focused.root, deps.home);
       if (!await stat4(input).catch(() => null))
         return { ok: false, error: { code: "path-not-found" } };
+      if (await isInsideManagedDir(input, focused.root))
+        return { ok: false, error: { code: "source-in-project" } };
       label = { kind: "local", path: abbreviateHome(input, deps.home) };
     } else {
       input = request.source;
@@ -22338,7 +22346,7 @@ async function activateWith(orca, deps) {
       });
       return { ok: false, error: { code: "preview-expired" } };
     }
-    const held = { id: randomUUID(), source, timer: null };
+    const held = { id: randomUUID(), source, workspaceId: request.workspaceId, root: focused.root, timer: null };
     armPreview(held);
     preview = held;
     return { ok: true, previewId: held.id, label, skills, preselected: skills.map((skill) => skill.name) };
@@ -22390,10 +22398,12 @@ ${hit.source}`) })) };
       return { ok: false, error: error.code };
     }
   });
-  orca.panels.handle("path.check", async ({ text }) => {
+  orca.panels.handle("path.check", async ({ text, workspaceId }) => {
     const focused = await focusedWorkspace();
     if (!("root" in focused))
       return { exists: false };
+    if (!isShownWorkspace(focused, workspaceId))
+      return { exists: false, error: WORKSPACE_CHANGED };
     const info = await stat4(resolveInputPath(text.trim(), focused.root, deps.home)).catch(() => null);
     return { exists: info?.isDirectory() ?? false };
   });
@@ -22512,7 +22522,7 @@ ${hit.source}`) })) };
     orca.panels.post("op.finished", finished);
     await postStateSafely();
   }
-  async function startOp(op) {
+  async function startOp(op, workspaceId) {
     const refuse = (error) => {
       logError(op, error);
       return { ok: false, error };
@@ -22520,6 +22530,8 @@ ${hit.source}`) })) };
     const focused = await focusedWorkspace();
     if (!("root" in focused))
       return refuse({ code: "no-workspace" });
+    if (!isShownWorkspace(focused, workspaceId))
+      return refuse(WORKSPACE_CHANGED);
     const agents2 = await agentsOf();
     let ctx = {
       root: focused.root,
@@ -22535,6 +22547,10 @@ ${hit.source}`) })) };
       held = preview?.id === op.previewId ? preview : null;
       if (!held)
         return refuse({ code: "preview-expired" });
+      if (held.workspaceId !== workspaceId || held.root !== focused.root) {
+        releasePreview();
+        return refuse(WORKSPACE_CHANGED);
+      }
       if (held.timer)
         clearTimeout(held.timer);
       let prepared;
@@ -22557,7 +22573,7 @@ ${hit.source}`) })) };
     });
     return { ok: true, opId };
   }
-  orca.panels.handle("op.start", async ({ op }) => {
+  orca.panels.handle("op.start", async ({ op, workspaceId }) => {
     if (current) {
       logError(op, { code: "busy" });
       return { ok: false, error: { code: "busy" } };
@@ -22565,7 +22581,7 @@ ${hit.source}`) })) };
     current = op;
     let started = false;
     try {
-      const answer = await startOp(op);
+      const answer = await startOp(op, workspaceId);
       started = answer.ok;
       return answer;
     } catch (error) {
@@ -22589,7 +22605,7 @@ function activate(orca) {
     trash: systemTrasher(process.platform, existsSync3, execRunner),
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
-    searchBase: process.env.SKILLS_API_URL ?? SKILLS_SH,
+    searchBase: SKILLS_SH,
     home: homedir3(),
     tmpdir: tmpdir2()
   });

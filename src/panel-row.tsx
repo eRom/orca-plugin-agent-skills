@@ -10,6 +10,8 @@ import type { SkillRow } from './visibility'
 
 /** Au-delà de ce nombre d'agents actifs, les pastilles se replient en un résumé (seuil choisi : ce que la largeur tient). */
 export const MAX_CHIPS = 12
+/** Largeur fixe de l'emplacement d'une pastille : la moitié de `LEAD_SLOT_WIDTH` (28) d'Agent Profiles, pour des icônes de même taille. */
+export const CHIP_SLOT_WIDTH = 14
 /** Lignes de bandeau montrées au plus : le reste est au journal du worker. */
 const MAX_LINES = 3
 
@@ -98,9 +100,17 @@ function renderChips(row: SkillRow, ctx: RowContext) {
       {row.agents.flatMap((agent) => {
         const view = views.get(agent.agent)
         if (!view || agent.state === 'excluded') return []
-        return agent.state === 'sees'
-          ? [<Image key={agent.agent} src={themedIcon(view.icon, scheme)} alt={m.agentSees(view.label, agent.via.join(', '))} size="xs" />]
-          : [<Image key={agent.agent} src={dimIcon(themedIcon(view.icon, scheme))} alt={m.agentAbsent(view.label)} size="xs" />]
+        const sees = agent.state === 'sees'
+        return [
+          <Box key={`chip-${row.folder}-${agent.agent}`} width={CHIP_SLOT_WIDTH} shrink={false} align="center" justify="center">
+            <Image
+              key={`chip-image-${row.folder}-${agent.agent}`}
+              src={sees ? themedIcon(view.icon, scheme) : dimIcon(themedIcon(view.icon, scheme))}
+              alt={sees ? m.agentSees(view.label, agent.via.join(', ')) : m.agentAbsent(view.label)}
+              size="xs"
+            />
+          </Box>
+        ]
       })}
       {total > MAX_CHIPS ? (
         <Button variant="ghost" size="sm" onPress={() => toggleChips(row.folder)}>

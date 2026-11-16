@@ -66,7 +66,7 @@ const READY_ROWS: SkillRow[] = [
 
 function stateOf(overrides: Partial<PanelState>): PanelState {
   return {
-    workspace: { status: 'ready', name: 'erom-tool-idema', branch: 'feat/skills', linkedWorktree: true },
+    workspace: { status: 'ready', id: 'identity:idema', name: 'erom-tool-idema', branch: 'feat/skills', linkedWorktree: true },
     agents: AGENTS,
     inventory: 'detected',
     rows: READY_ROWS,

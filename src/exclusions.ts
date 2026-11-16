@@ -64,17 +64,3 @@ export function include(ex: Exclusions, projectKey: string, folder: string, agen
   return withAgents(ex, projectKey, folder, left)
 }
 
-/**
- * Lève l'exclusion des agents qui voient de nouveau la skill sur le disque (le disque prime). Renvoie `ex` lui-même
- * si rien ne change, pour que l'appelant sache sans comparer s'il doit réécrire le stockage. Les skills absentes de
- * `rows` ne sont pas touchées : un autre worktree du projet peut encore les porter.
- */
-export function pruneSeen(ex: Exclusions, projectKey: string, rows: readonly SkillRow[]): Exclusions {
-  let next = ex
-  for (const row of rows) {
-    const current = excludedOf(next, projectKey, row.folder)
-    const seen = row.agents.filter((a) => a.state === 'sees' && current.includes(a.agent)).map((a) => a.agent)
-    if (seen.length > 0) next = include(next, projectKey, row.folder, seen)
-  }
-  return next
-}

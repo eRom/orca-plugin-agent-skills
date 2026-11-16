@@ -61,7 +61,7 @@ test('the texts fixed by the spec are the French ones', () => {
 test('describeError translates every operation error code, in both languages', () => {
   for (const locale of LOCALES) {
     const m = MESSAGES[locale]
-    for (const code of ['busy', 'no-workspace', 'no-trash', 'gone', 'preview-expired', 'path-not-found', 'no-target'] as const) {
+    for (const code of ['busy', 'no-workspace', 'no-trash', 'gone', 'preview-expired', 'path-not-found', 'no-target', 'workspace-changed', 'source-in-project'] as const) {
       const text = describeError({ code }, m)
       assert.ok(text.trim() !== '', `${locale} ${code}`)
       assert.notEqual(text, code)

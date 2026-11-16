@@ -98,6 +98,8 @@ export type Messages = {
     linkedTarget: (dirs: string) => string
     gone: string
     previewExpired: string
+    workspaceChanged: string
+    sourceInProject: string
     pathNotFound: string
     noTarget: string
     lib: string
@@ -215,6 +217,8 @@ const en: Messages = {
     linkedTarget: (dirs) => `${dirs} points here: remove it first`,
     gone: 'This skill no longer exists on disk.',
     previewExpired: 'The preview of the source expired: start again.',
+    workspaceChanged: 'The focused workspace changed: nothing was done. Try again here.',
+    sourceInProject: 'This folder is inside the skills folders of the project: pick a folder outside of them.',
     pathNotFound: 'Folder not found.',
     noTarget: 'No target folder for these agents.',
     lib: 'The skills library failed.'
@@ -331,6 +335,8 @@ const fr: Messages = {
     linkedTarget: (dirs) => `${dirs} pointe ici : retirez-le d'abord`,
     gone: "Cette skill n'existe plus sur le disque.",
     previewExpired: "L'aperçu de la source a expiré : recommencez.",
+    workspaceChanged: "L'espace actif a changé : rien n'a été fait. Recommencez ici.",
+    sourceInProject: 'Ce dossier est dans les dossiers de skills du projet : choisissez un dossier en dehors.',
     pathNotFound: 'Dossier introuvable.',
     noTarget: 'Aucun dossier cible pour ces agents.',
     lib: 'La bibliothèque skills a échoué.'
@@ -376,6 +382,8 @@ export const messagesFor = (tag: string): Messages => MESSAGES[localeOf(tag)]
 const OP_ERROR_CODES: ReadonlySet<string> = new Set<OpError['code']>([
   'busy',
   'no-workspace',
+  'workspace-changed',
+  'source-in-project',
   'collision',
   'no-trash',
   'unsafe-dir',
@@ -405,6 +413,10 @@ export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages):
         return [m.errors.busy]
       case 'no-workspace':
         return [m.errors.noWorkspace]
+      case 'workspace-changed':
+        return [m.errors.workspaceChanged]
+      case 'source-in-project':
+        return [m.errors.sourceInProject]
       case 'collision':
         return [m.errors.collision((error.folders ?? []).join(', '))]
       case 'no-trash':

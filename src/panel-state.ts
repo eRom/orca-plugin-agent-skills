@@ -77,6 +77,8 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 let currentQuery = ''
 /** Identité de l'espace de la dernière lecture : un autre espace efface ce que le champ préparait. */
 let workspaceKey: string | null = null
+/** Identifiant de l'espace montré : chaque demande au worker le renvoie, pour qu'il refuse d'agir sur un autre espace. */
+let shownWorkspaceId = ''
 /** Numéro de la dernière lecture d'état demandée : une lecture plus ancienne qui finit après n'est pas gardée. */
 let stateTicket = 0
 /** Vrai entre l'appui et la réponse de `op.start` : un état poussé alors ne dit rien du geste qui part. */
@@ -122,6 +124,7 @@ function applyState(next: PanelState): void {
   const key = JSON.stringify(next.workspace)
   if (workspaceKey !== null && key !== workspaceKey) resetAll()
   workspaceKey = key
+  shownWorkspaceId = next.workspace.status === 'ready' ? next.workspace.id : ''
   set(panelState, next)
   set(loadError, null)
 }
@@ -170,8 +173,13 @@ async function runSearch(text: string, gen: number): Promise<void> {
 async function runPathCheck(text: string, gen: number): Promise<void> {
   set(pathCheck, { status: 'checking' })
   try {
-    const answer = await plugin.request('path.check', { text })
+    const answer = await plugin.request('path.check', { text, workspaceId: shownWorkspaceId })
     if (gen !== generation) return
+    if (answer.error) {
+      set(pathCheck, null)
+      set(addNote, { ...emptyNote(), error: answer.error })
+      return
+    }
     set(pathCheck, answer.exists ? { status: 'found', text } : { status: 'missing' })
   } catch (error) {
     if (gen !== generation) return
@@ -247,6 +255,8 @@ export function toggleSkill(name: string, checked: boolean): void {
     // L'ordre de la source, pas celui des clics.
     return { ...flow, selected: flow.skills.map((skill) => skill.name).filter((each) => wanted.has(each)) }
   })
+  // Un « Remplacer » en attente portait l'ancienne sélection : changer les cases l'annule, le prochain appui sur « Ajouter » refait le contrôle.
+  update(confirmation, (current) => (current?.kind === 'replace' ? null : current))
 }
 
 // --- Gestes ---
@@ -269,7 +279,7 @@ export async function startOp(op: OpRequest): Promise<void> {
   let answer: StartAnswer
   starting = true
   try {
-    answer = await plugin.request('op.start', { op }, { timeoutMs: LONG_TIMEOUT_MS })
+    answer = await plugin.request('op.start', { op, workspaceId: shownWorkspaceId }, { timeoutMs: LONG_TIMEOUT_MS })
   } catch (error) {
     starting = false
     set(pending, null)
@@ -320,10 +330,10 @@ async function readSource(request: PreviewRequest, origin: 'path' | 'hit'): Prom
   set(addFlow, { status: 'ready', origin, previewId: answer.previewId, label: answer.label, skills: answer.skills, selected: answer.preselected })
 }
 
-export const addHit = (hit: { source: string; skillId: string }): Promise<void> => readSource({ kind: 'remote', source: hit.source, skillId: hit.skillId }, 'hit')
+export const addHit = (hit: { source: string; skillId: string }): Promise<void> => readSource({ kind: 'remote', source: hit.source, skillId: hit.skillId, workspaceId: shownWorkspaceId }, 'hit')
 
 /** Appui sur la ligne « Ajouter depuis ce dossier ». */
-export const readPath = (text: string): Promise<void> => readSource({ kind: 'path', text }, 'path')
+export const readPath = (text: string): Promise<void> => readSource({ kind: 'path', text, workspaceId: shownWorkspaceId }, 'path')
 
 function applyFinished(finished: OpFinished): void {
   set(pending, null)
@@ -360,13 +370,22 @@ export function toggleChips(folder: string): void {
 }
 
 export const askConfirmation = (next: Confirm): void => set(confirmation, next)
-export const cancelConfirmation = (): void => set(confirmation, null)
+export const cancelConfirmation = (): void => {
+  let wasReplace = false
+  update(confirmation, (current) => {
+    wasReplace = current?.kind === 'replace'
+    return null
+  })
+  // Le « Remplacer » annulé a laissé le champ sur son chemin : la ligne « Ajouter depuis ce dossier » revient.
+  if (wasReplace && isPathInput(currentQuery.trim())) schedule(currentQuery, 0)
+}
 
 /** Tourne une fois avant le premier rendu ; ce qui est poussé dans `subscriptions` s'arrête avec le panneau. */
 export function setup(ctx: PanelContext): void {
   generation = 0
   currentQuery = ''
   workspaceKey = null
+  shownWorkspaceId = ''
   stateTicket = 0
   starting = false
   stopTimer()

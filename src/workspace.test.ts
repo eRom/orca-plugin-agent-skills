@@ -34,7 +34,7 @@ test('a local worktree is ready, with the project key and the branch', async () 
   assert.deepEqual(result, {
     root,
     projectKey: 'p1',
-    view: { status: 'ready', name: 'feature', branch: 'feat/x', linkedWorktree: false }
+    view: { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false }
   })
 })
 
@@ -43,7 +43,7 @@ test('the project key falls back to the workspace id, the branch to the context 
   const result = await resolveWorkspace(hostOf(context('identity:x'), [row(root, { projectId: null, branch: null, hostId: null })]), tempDir('ws-home'))
   assert.ok('root' in result)
   assert.equal(result.projectKey, 'identity:x')
-  assert.deepEqual(result.view, { status: 'ready', name: 'feature', branch: 'main', linkedWorktree: false })
+  assert.deepEqual(result.view, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'main', linkedWorktree: false })
 })
 
 test('a .git file marks a linked worktree, a .git folder does not', async () => {

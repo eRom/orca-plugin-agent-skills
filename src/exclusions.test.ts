@@ -1,21 +1,6 @@
 // Exclusions par projet : fonctions pures sur la valeur du stockage.
 import { assert, test } from 'orca/testing'
-import { exclude, EXCLUSIONS_KEY, excludedOf, include, parseExclusions, pruneSeen, type Exclusions } from './exclusions'
-import type { SkillRow } from './visibility'
-
-function rowSeenBy(folder: string, sees: string[], excluded: string[] = []): SkillRow {
-  return {
-    folder,
-    displayName: folder,
-    description: '',
-    source: { kind: 'handwritten' },
-    agents: [...sees.map((agent) => ({ agent, state: 'sees' as const, via: ['.agents/skills' as const] })), ...excluded.map((agent) => ({ agent, state: 'excluded' as const, via: [] }))],
-    missingFor: [],
-    excluded,
-    versions: [],
-    copies: []
-  }
-}
+import { exclude, EXCLUSIONS_KEY, excludedOf, include, parseExclusions, type Exclusions } from './exclusions'
 
 test('the storage key is versioned', () => {
   assert.equal(EXCLUSIONS_KEY, 'exclusions.v1')
@@ -86,27 +71,4 @@ test('include on an unknown skill or project changes nothing', () => {
   const start: Exclusions = { p1: { alpha: ['grok'] } }
   assert.deepEqual(include(start, 'p1', 'beta'), start)
   assert.deepEqual(include(start, 'p2', 'alpha', ['grok']), start)
-})
-
-test('pruneSeen drops agents that see the skill again', () => {
-  const start: Exclusions = { p1: { alpha: ['grok', 'pi'], beta: ['codex'] } }
-  const rows = [rowSeenBy('alpha', ['grok'], ['pi']), rowSeenBy('beta', [], ['codex'])]
-  assert.deepEqual(pruneSeen(start, 'p1', rows), { p1: { alpha: ['pi'], beta: ['codex'] } })
-})
-
-test('pruneSeen returns the very same value when nothing changed', () => {
-  const start: Exclusions = { p1: { alpha: ['pi'] } }
-  assert.equal(pruneSeen(start, 'p1', [rowSeenBy('alpha', [], ['pi'])]), start)
-  assert.equal(pruneSeen(start, 'p1', []), start)
-})
-
-test('pruneSeen empties the entry once every excluded agent sees it again', () => {
-  const start: Exclusions = { p1: { alpha: ['grok'] }, p2: { alpha: ['grok'] } }
-  assert.deepEqual(pruneSeen(start, 'p1', [rowSeenBy('alpha', ['grok'])]), { p2: { alpha: ['grok'] } })
-})
-
-test('pruneSeen only touches the given project', () => {
-  const start: Exclusions = { p1: { alpha: ['grok'] }, p2: { alpha: ['grok'] } }
-  const next = pruneSeen(start, 'p2', [rowSeenBy('alpha', ['grok'])])
-  assert.deepEqual(next, { p1: { alpha: ['grok'] } })
 })

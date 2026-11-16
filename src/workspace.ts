@@ -6,9 +6,10 @@ import type { OrcaWorkerApi } from 'orca/worker'
 /** Le `call` typé du worker : seul point d'entrée vers l'hôte, injecté pour que les tests n'aient pas besoin d'Orca. */
 export type HostCall = OrcaWorkerApi['host']['call']
 
+/** `id` : identifiant de l'espace ; le panneau le renvoie avec chaque demande pour que le worker refuse d'agir sur un autre espace. */
 export type WorkspaceView =
   | { status: 'none' | 'remote' | 'missing' | 'home' }
-  | { status: 'ready'; name: string; branch: string | null; linkedWorktree: boolean }
+  | { status: 'ready'; id: string; name: string; branch: string | null; linkedWorktree: boolean }
 
 /** `projectKey` : identifiant du projet (`projectId`), commun à tous ses worktrees ; l'identifiant de l'espace à défaut. */
 export type FocusedWorkspace = { root: string; projectKey: string; view: WorkspaceView }
@@ -51,6 +52,7 @@ export async function resolveWorkspace(
     projectKey: row.projectId ?? row.id,
     view: {
       status: 'ready',
+      id: row.id,
       name: row.name,
       branch: row.branch ?? (context.branch === '' ? null : context.branch),
       linkedWorktree: await isLinkedWorktree(row.path)

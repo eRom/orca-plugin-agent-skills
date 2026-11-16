@@ -3,6 +3,7 @@ import { assert, hostError, mockHost, mount, test } from 'orca/testing'
 import { agentById } from './agents'
 import { MESSAGES } from './copy'
 import * as panel from './panel'
+import type { OpError } from './operations'
 import type { AgentView, OpFinished, OpRequest, PanelState, PreviewAnswer, PreviewRequest, SearchAnswer, StartAnswer } from './protocol'
 import type { CopyKind, DiskSkill, SkillCopy } from './scan'
 import type { ManagedDir } from './skill-dirs'
@@ -63,7 +64,7 @@ function stateOf(options: StateOptions = {}): PanelState {
     HOME
   )
   return {
-    workspace: options.workspace ?? { status: 'ready', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true },
+    workspace: options.workspace ?? { status: 'ready', id: 'identity:tool', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true },
     agents: agentViews(agents),
     inventory: 'detected',
     rows,
@@ -82,9 +83,9 @@ type Setup = {
   state?: PanelState
   search?: (input: { query: string }) => SearchAnswer | Promise<SearchAnswer>
   preview?: (input: PreviewRequest) => PreviewAnswer | Promise<PreviewAnswer>
-  start?: (input: { op: OpRequest }) => StartAnswer | Promise<StartAnswer>
+  start?: (input: { op: OpRequest; workspaceId: string }) => StartAnswer | Promise<StartAnswer>
   pick?: () => { path: string | null }
-  pathCheck?: (input: { text: string }) => { exists: boolean }
+  pathCheck?: (input: { text: string; workspaceId: string }) => { exists: boolean; error?: OpError }
   refresh?: () => PanelState | Promise<PanelState>
   locale?: string
   theme?: 'light' | 'dark'
@@ -104,7 +105,9 @@ async function open(setup: Setup = {}) {
     previews: [] as PreviewRequest[],
     pathChecks: [] as string[],
     ops: [] as OpRequest[],
-    stateReads: [] as string[]
+    stateReads: [] as string[],
+    /** L'identifiant d'espace de chaque demande qui en porte un, dans l'ordre. */
+    workspaceIds: [] as string[]
   }
   let current = setup.state ?? stateOf({ skills: [HANDWRITTEN] })
   const host = mockHost({
@@ -121,16 +124,19 @@ async function open(setup: Setup = {}) {
         log.searches.push(input.query)
         return setup.search ? setup.search(input) : { ok: true as const, hits: [] }
       },
-      'path.check': (input: { text: string }) => {
+      'path.check': (input: { text: string; workspaceId: string }) => {
         log.pathChecks.push(input.text)
+        log.workspaceIds.push(input.workspaceId)
         return setup.pathCheck ? setup.pathCheck(input) : { exists: true }
       },
       'source.preview': (input: PreviewRequest) => {
         log.previews.push(input)
+        log.workspaceIds.push(input.workspaceId)
         return setup.preview ? setup.preview(input) : ONE_SKILL('alpha')
       },
-      'op.start': (input: { op: OpRequest }) => {
+      'op.start': (input: { op: OpRequest; workspaceId: string }) => {
         log.ops.push(input.op)
+        log.workspaceIds.push(input.workspaceId)
         return setup.start ? setup.start(input) : { ok: true as const, opId: `op-${log.ops.length}` }
       },
       'folder.pick': () => (setup.pick ? setup.pick() : { path: null })
@@ -334,7 +340,7 @@ test('adding a skills.sh hit previews it, then adds it', async () => {
   await view.type(SEARCH_FIELD, 'mo')
   await afterPause(view)
   await view.press({ testId: 'add-acme/motion-kit/motion' })
-  assert.deepEqual(log.previews, [{ kind: 'remote', source: 'acme/motion-kit', skillId: 'motion' }])
+  assert.deepEqual(log.previews, [{ kind: 'remote', source: 'acme/motion-kit', skillId: 'motion', workspaceId: 'identity:tool' }])
   assert.deepEqual(log.ops, [{ kind: 'add', previewId: 'p1', names: ['motion'], replace: false }])
   // Aperçu et geste partent avec le délai long : le worker peut cloner un dépôt.
   const requests = host.callsOf('plugin.request') as { name: string; timeoutMs?: number }[]
@@ -359,7 +365,7 @@ test('a typed path offers to add from that folder, and reads nothing until press
   assert.deepEqual(log.ops, [])
   // L'appui sur la ligne lit la source, puis ajoute directement la skill unique.
   await view.press({ testId: 'read-path' })
-  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha' }])
+  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha', workspaceId: 'identity:tool' }])
   assert.deepEqual(log.ops, [{ kind: 'add', previewId: 'p7', names: ['alpha'], replace: false }])
   const read = (host.callsOf('plugin.request') as { name: string; timeoutMs?: number }[]).find((request) => request.name === 'source.preview')
   assert.equal(read?.timeoutMs, 120000)
@@ -369,7 +375,7 @@ test('a typed path offers to add from that folder, and reads nothing until press
 test('Enter on a path reads it like a press on the line', async () => {
   const { view, log } = await open()
   await view.type(SEARCH_FIELD, '~/dev/tools/skills/alpha', { submit: true })
-  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha' }])
+  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha', workspaceId: 'identity:tool' }])
   assert.deepEqual(log.ops, [{ kind: 'add', previewId: 'p1', names: ['alpha'], replace: false }])
   await expectClean(view)
 })
@@ -866,7 +872,7 @@ test('a switch of workspace drops the half-typed add', async () => {
   await view.type(SEARCH_FIELD, '~/x')
   await afterPause(view)
   assert.notEqual(view.find({ testId: 'read-path' }), null)
-  await view.post('state.changed', stateOf({ workspace: { status: 'ready', name: 'other', branch: 'main', linkedWorktree: false } }))
+  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
   assert.equal(view.find({ testId: 'read-path' }), null)
   assert.equal(view.valueOf(SEARCH_FIELD), '')
   await expectClean(view)
@@ -986,5 +992,100 @@ test('an older state read cannot overwrite a newer pushed state', async () => {
   await pushed
   assert.notEqual(view.find({ label: FR.emptyTitle }), null)
   assert.equal(view.find({ text: 'motion-context' }), null)
+  await expectClean(view)
+})
+
+test('every request that acts on a workspace carries the id of the one the panel shows', async () => {
+  const { view, log } = await open({
+    preview: () => ONE_SKILL('alpha')
+  })
+  await view.type(SEARCH_FIELD, '~/x')
+  await afterPause(view)
+  await view.press({ testId: 'read-path' })
+  // path.check, source.preview, puis op.start (une seule skill : ajout direct).
+  assert.deepEqual(log.workspaceIds, ['identity:tool', 'identity:tool', 'identity:tool'])
+  // Après un changement d'espace, les demandes suivantes portent le nouvel identifiant.
+  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
+  await view.type(SEARCH_FIELD, '~/y')
+  await afterPause(view)
+  assert.equal(log.workspaceIds.at(-1), 'identity:other')
+  await expectClean(view)
+})
+
+test('a path check refused because the workspace changed says so, in the field note', async () => {
+  const { view } = await open({ pathCheck: () => ({ exists: false, error: { code: 'workspace-changed' } }) })
+  await view.type(SEARCH_FIELD, '~/x')
+  await afterPause(view)
+  assert.notEqual(view.find({ text: new RegExp(FR.errors.workspaceChanged.slice(0, 20)) }), null)
+  assert.equal(view.find({ testId: 'read-path' }), null)
+  await expectClean(view)
+})
+
+test('a gesture refused because the workspace changed shows its localised error', async () => {
+  const { view } = await open({ start: () => ({ ok: false, error: { code: 'workspace-changed' } }), state: stateOf({ skills: [HANDWRITTEN] }) })
+  await view.press({ label: FR.removeSkillLabel('motion-context') })
+  await view.press({ text: FR.removeConfirm })
+  assert.notEqual(view.find({ text: FR.errors.workspaceChanged }), null)
+  await expectClean(view)
+})
+
+test('the chips sit in a fixed-width slot, as in Agent Profiles', async () => {
+  const { view } = await open()
+  const images = view.findAll({ type: 'Image' })
+  assert.equal(images.length, ROMAIN.length)
+  for (const agent of ROMAIN) {
+    // Les pastilles sont des enfants d'un tableau : leur clé est préfixée dans le chemin, le testId ne les atteint pas.
+    const slots = view.findAll({ type: 'Box' }).filter((box) => box.path.endsWith(`.chip-motion-context-${agent}`))
+    assert.equal(slots.length, 1, agent)
+    const slot = slots[0]!
+    assert.equal(slot.props.width, 14)
+    assert.equal(slot.props.shrink, false)
+    assert.equal(images.filter((image) => image.path === `${slot.path}/chip-image-motion-context-${agent}`).length, 1, `${agent} icon is inside its slot`)
+  }
+  await expectClean(view)
+})
+
+test('cancelling a replace on a typed path brings the add line back', async () => {
+  const { view } = await open({
+    start: ({ op }) => (op.kind === 'add' && !op.replace ? { ok: false, error: { code: 'collision', folders: ['alpha'] } } : { ok: true, opId: 'op-x' })
+  })
+  await view.type(SEARCH_FIELD, '~/dev/tools/skills/alpha')
+  await afterPause(view)
+  await view.press({ testId: 'read-path' })
+  assert.notEqual(view.find({ text: FR.replaceAsk('alpha') }), null)
+  assert.equal(view.find({ testId: 'read-path' }), null, 'the line is hidden while the question is asked')
+  await view.press({ text: FR.cancel })
+  assert.equal(view.find({ text: FR.replaceAsk('alpha') }), null)
+  assert.notEqual(view.find({ testId: 'read-path' }), null, 'the add line is back')
+  await expectClean(view)
+})
+
+test('unchecking a skill after a collision drops the replace question, the next add asks again', async () => {
+  let attempt = 0
+  const { view, log } = await open({
+    preview: () => ({
+      ok: true,
+      previewId: 'p9',
+      label: { kind: 'local', path: '~/dev/tools/skills' },
+      skills: [
+        { name: 'alpha', description: '' },
+        { name: 'beta', description: '' }
+      ],
+      preselected: ['alpha', 'beta']
+    }),
+    start: ({ op }) => {
+      attempt += 1
+      if (op.kind === 'add' && !op.replace) return { ok: false, error: { code: 'collision', folders: ['alpha'] } }
+      return { ok: true, opId: `op-${attempt}` }
+    }
+  })
+  await view.type(SEARCH_FIELD, '~/dev/tools/skills')
+  await afterPause(view)
+  await view.press({ testId: 'read-path' })
+  await view.press({ text: FR.addCount(2) })
+  assert.notEqual(view.find({ text: FR.replaceAsk('alpha') }), null)
+  await view.toggle({ label: 'alpha' })
+  assert.equal(view.find({ text: FR.replaceAsk('alpha') }), null, 'the question about the old selection is gone')
+  assert.equal(log.ops.filter((op) => op.kind === 'add' && op.replace).length, 0, 'nothing was replaced')
   await expectClean(view)
 })

@@ -1,6 +1,6 @@
 // Joue le worker comme Orca le ferait : requêtes du panneau et évènements, sur de vrais projets temporaires, avec une
 // bibliothèque `skills`, une Corbeille et un réseau factices. Jamais la vraie sonde des agents ni la vraie Corbeille.
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
@@ -202,7 +202,7 @@ const callHandler = (setup: Setup, name: string, input: unknown, signal: AbortSi
 
 async function previewAdd(setup: Setup, names: readonly string[]): Promise<string> {
   const { dir } = previewable(setup, names)
-  const answer = await setup.worker.request('source.preview', { kind: 'path', text: dir })
+  const answer = await setup.worker.request('source.preview', { kind: 'path', text: dir, workspaceId: WS })
   assert.equal(answer.ok, true)
   if (!answer.ok) throw new Error('unreachable')
   return answer.previewId
@@ -222,14 +222,16 @@ function gateInstall(lib: FakeSkillsLib): { release(): void } {
   return { release }
 }
 
-const ADD = (previewId: string, names: string[], replace = false): { op: OpRequest } => ({ op: { kind: 'add', previewId, names, replace } })
+/** Identifiant de l'espace focalisé par défaut (`rowOf`) : celui que le panneau renvoie avec chaque demande. */
+const WS = 'identity:x'
+const ADD = (previewId: string, names: string[], replace = false): { op: OpRequest; workspaceId: string } => ({ op: { kind: 'add', previewId, names, replace }, workspaceId: WS })
 
 test('state for a focused local worktree lists its skills and Romain agents', async () => {
   const setup = await boot({ deps: { pickFolder: async () => null } })
   writeSkill(setup.root, '.claude/skills', 'alpha')
   writeSkill(setup.root, '.agents/skills', 'beta')
   const state = await stateOf(setup.worker)
-  assert.deepEqual(state.workspace, { status: 'ready', name: 'feature', branch: 'feat/x', linkedWorktree: false })
+  assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false })
   assert.deepEqual(
     state.agents.map((agent) => agent.id),
     ['claude', 'codex', 'grok', 'opencode', 'dsh', 'pi', 'antigravity']
@@ -289,7 +291,7 @@ test('remote, missing, home and no workspace states', async () => {
 test('a gesture without a usable workspace is refused', async () => {
   const setup = await boot()
   setup.focus('identity:none', [])
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' } })
+  const answer = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
   assert.deepEqual(answer, { ok: false, error: { code: 'no-workspace' } })
   await setup.worker.deactivate()
 })
@@ -366,11 +368,11 @@ test('a second gesture while one runs is busy', async () => {
   writeSkill(setup.root, '.claude/skills', 'beta')
   const previewId = await previewAdd(setup, ['alpha'])
   await setup.worker.request('op.start', ADD(previewId, ['alpha']))
-  const second = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' } })
+  const second = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' }, workspaceId: WS })
   assert.deepEqual(second, { ok: false, error: { code: 'busy' } })
   gate.release()
   await settled(setup.worker)
-  const third = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' } })
+  const third = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' }, workspaceId: WS })
   assert.equal(third.ok, true)
   await settled(setup.worker, 2)
   await setup.worker.deactivate()
@@ -430,7 +432,7 @@ test('remove-dir excludes the agents that lost the skill, per project', async ()
   writeSkill(setup.root, '.grok/skills', 'alpha')
   assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'sees')
 
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' } })
+  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' }, workspaceId: WS })
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['grok'] } })
@@ -455,7 +457,7 @@ test('removing the last copy from a folder clears the exclusions like a full rem
   const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'], beta: ['codex'] } } } })
   writeSkill(setup.root, '.agents/skills', 'alpha')
   await stateOf(setup.worker)
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.agents/skills' } })
+  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.agents/skills' }, workspaceId: WS })
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(storedExclusions(setup.host), { p1: { beta: ['codex'] } })
@@ -466,7 +468,7 @@ test('reinstate copies into the target dir and lifts the exclusion', async () =>
   const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
   writeSkill(setup.root, '.agents/skills', 'alpha')
   assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'excluded')
-  const answer = await setup.worker.request('op.start', { op: { kind: 'reinstate', folder: 'alpha', agent: 'grok' } })
+  const answer = await setup.worker.request('op.start', { op: { kind: 'reinstate', folder: 'alpha', agent: 'grok' }, workspaceId: WS })
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.match(await readFile(join(setup.root, '.grok/skills/alpha/SKILL.md'), 'utf8'), /alpha/)
@@ -478,7 +480,7 @@ test('reinstate copies into the target dir and lifts the exclusion', async () =>
 test('propagate lifts the exclusion of the agents it feeds', async () => {
   const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok', 'codex'] } } } })
   writeSkill(setup.root, '.claude/skills', 'alpha')
-  await setup.worker.request('op.start', { op: { kind: 'propagate', folder: 'alpha', agents: ['grok'] } })
+  await setup.worker.request('op.start', { op: { kind: 'propagate', folder: 'alpha', agents: ['grok'] }, workspaceId: WS })
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['codex'] } })
   await setup.worker.deactivate()
@@ -488,7 +490,7 @@ test('remove clears the exclusions of the skill', async () => {
   const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'], beta: ['codex'] } } } })
   writeSkill(setup.root, '.agents/skills', 'alpha')
   await stateOf(setup.worker)
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' } })
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(setup.trash.trashed, [join(setup.root, '.agents/skills/alpha')])
   assert.deepEqual(storedExclusions(setup.host), { p1: { beta: ['codex'] } })
@@ -501,7 +503,7 @@ test('remove succeeds when a copy vanished after the last scan', async () => {
   writeSkill(setup.root, '.claude/skills', 'alpha')
   assert.equal((await stateOf(setup.worker)).rows[0]!.copies.length, 2)
   rmSync(join(setup.root, '.claude/skills/alpha'), { recursive: true })
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' } })
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
   const finished = await settled(setup.worker)
   assert.equal(finished.ok, true)
   assert.deepEqual(setup.trash.trashed, [join(setup.root, '.agents/skills/alpha')])
@@ -514,7 +516,7 @@ test('keep rewrites the other copies from the chosen version', async () => {
   writeSkill(setup.root, '.claude/skills', 'alpha', undefined, 'Two\n')
   const state = await stateOf(setup.worker)
   const chosen = state.rows[0]!.versions.find((version) => version.dirs.includes('.claude/skills'))!
-  await setup.worker.request('op.start', { op: { kind: 'keep', folder: 'alpha', hash: chosen.hash } })
+  await setup.worker.request('op.start', { op: { kind: 'keep', folder: 'alpha', hash: chosen.hash }, workspaceId: WS })
   assert.equal((await settled(setup.worker)).ok, true)
   assert.match(await readFile(join(setup.root, '.agents/skills/alpha/SKILL.md'), 'utf8'), /Two/)
   await setup.worker.deactivate()
@@ -571,7 +573,7 @@ test('search reports an unreachable catalogue and ignores a blank query', async 
 test('preview of a local folder lists its skills, preselected', async () => {
   const setup = await boot()
   const { dir } = previewable(setup, ['alpha', 'Beta Skill'])
-  const answer = await setup.worker.request('source.preview', { kind: 'path', text: dir })
+  const answer = await setup.worker.request('source.preview', { kind: 'path', text: dir, workspaceId: WS })
   assert.equal(answer.ok, true)
   if (!answer.ok) return
   assert.deepEqual(answer.label, { kind: 'local', path: dir })
@@ -593,13 +595,13 @@ test('preview resolves ~ and relative paths and reports a missing folder', async
     seen.push(input)
     return source
   }
-  assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: './local-skills' })).ok, true)
+  assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: './local-skills', workspaceId: WS })).ok, true)
   mkdirSync(join(setup.home, 'mine'))
-  const homeAnswer = await setup.worker.request('source.preview', { kind: 'path', text: '~/mine' })
+  const homeAnswer = await setup.worker.request('source.preview', { kind: 'path', text: '~/mine', workspaceId: WS })
   assert.equal(homeAnswer.ok, true)
   if (homeAnswer.ok) assert.deepEqual(homeAnswer.label, { kind: 'local', path: '~/mine' })
   assert.deepEqual(seen, [inside, join(setup.home, 'mine')])
-  assert.deepEqual(await setup.worker.request('source.preview', { kind: 'path', text: '/no/such/folder' }), {
+  assert.deepEqual(await setup.worker.request('source.preview', { kind: 'path', text: '/no/such/folder', workspaceId: WS }), {
     ok: false,
     error: { code: 'path-not-found' }
   })
@@ -610,7 +612,7 @@ test('preview of a skills.sh hit keeps only that skill', async () => {
   const setup = await boot()
   const source = setup.lib.source([{ name: 'alpha' }, { name: 'Beta Skill', description: 'Does beta' }])
   setup.lib.resolve = async () => source
-  const answer = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'beta-skill' })
+  const answer = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'beta-skill', workspaceId: WS })
   assert.equal(answer.ok, true)
   if (!answer.ok) return
   assert.deepEqual(answer.label, { kind: 'remote', source: 'owner/repo' })
@@ -627,7 +629,7 @@ test('preview of a skills.sh hit missing from its repo is a lib error', async ()
     disposed++
   }
   setup.lib.resolve = async () => source
-  const answer = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'ghost' })
+  const answer = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'ghost', workspaceId: WS })
   assert.equal(answer.ok, false)
   if (!answer.ok) {
     assert.equal(answer.error.code, 'lib')
@@ -642,7 +644,7 @@ test('a library failure while resolving is a lib error', async () => {
   setup.lib.resolve = async () => {
     throw Object.assign(new Error('clone failed'), { code: 'SKILLS_GIT_CLONE_TIMEOUT' })
   }
-  const answer = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'alpha' })
+  const answer = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'alpha', workspaceId: WS })
   assert.deepEqual(answer, { ok: false, error: { code: 'lib', diagnostics: [{ code: 'SKILLS_GIT_CLONE_TIMEOUT', message: 'clone failed' }] } })
   await setup.worker.deactivate()
 })
@@ -659,9 +661,9 @@ test('a new preview releases the previous source, and an add releases its own', 
   }
   const dir = tempDir('worker-source')
   setup.lib.resolve = async () => make('first')
-  const first = await setup.worker.request('source.preview', { kind: 'path', text: dir })
+  const first = await setup.worker.request('source.preview', { kind: 'path', text: dir, workspaceId: WS })
   setup.lib.resolve = async () => make('second')
-  const second = await setup.worker.request('source.preview', { kind: 'path', text: dir })
+  const second = await setup.worker.request('source.preview', { kind: 'path', text: dir, workspaceId: WS })
   assert.deepEqual(disposed, ['first'])
   assert.equal(first.ok && second.ok, true)
   if (!first.ok || !second.ok) return
@@ -676,7 +678,7 @@ test('a new preview releases the previous source, and an add releases its own', 
 
 test('errors and warnings are logged on one line with code and folder', async () => {
   const setup = await boot()
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'ghost' } })
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'ghost' }, workspaceId: WS })
   const finished = await settled(setup.worker)
   assert.equal(finished.ok, false)
   assert.deepEqual(finished.error, { code: 'gone' })
@@ -700,31 +702,35 @@ test('a worker restarted mid-gesture posts a free state', async () => {
   await restarted.worker.deactivate()
 })
 
-test('a state read that prunes and a gesture that excludes never overwrite each other', async () => {
-  // Codex voit `alpha` mais l'exclut encore au stockage : le premier `state.get` l'élague et écrit. Sa lecture du
-  // stockage rend une valeur périmée après 80 ms, pendant lesquelles un `remove-dir` termine et exclut Grok.
+test('a state read never writes the exclusions: one hidden by a copy in another worktree comes back when that copy goes', async () => {
+  // Codex est exclu au stockage mais voit `alpha` sur ce disque (copie faite dans un autre worktree du projet).
   const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['codex'] } } } })
   writeSkill(setup.root, '.agents/skills', 'alpha')
+  // Un stockage qui refuse toute écriture : une lecture d'état qui voudrait écrire échouerait.
+  setup.controls.failStorageSet = true
+  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'sees')
+  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'sees')
+  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['codex'] } })
+
+  // La copie qui le nourrissait disparaît : l'exclusion, jamais levée, redevient visible.
+  rmSync(join(setup.root, '.agents/skills/alpha'), { recursive: true })
+  writeSkill(setup.root, '.claude/skills', 'alpha')
+  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'excluded')
+  await setup.worker.deactivate()
+})
+
+test('two gestures in a row each keep the exclusions the other one wrote', async () => {
+  const setup = await boot()
+  writeSkill(setup.root, '.agents/skills', 'alpha')
   writeSkill(setup.root, '.grok/skills', 'alpha')
-  let entered = (): void => {}
-  const slowReadStarted = new Promise<void>((resolve) => {
-    entered = resolve
-  })
-  let slow = true
-  setup.controls.afterStorageGet = async (key) => {
-    if (key !== EXCLUSIONS_KEY || !slow) return
-    slow = false
-    entered()
-    await new Promise((resolve) => setTimeout(resolve, 80))
-  }
-  const read = stateOf(setup.worker)
-  await slowReadStarted
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' } })
-  assert.equal(answer.ok, true)
-  assert.equal((await settled(setup.worker)).ok, true)
-  await read
-  // Les deux effets : Codex élagué (il voit la skill), Grok exclu (il l'a perdue).
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['grok'] } })
+  writeSkill(setup.root, '.agents/skills', 'beta')
+  writeSkill(setup.root, '.claude/skills', 'beta')
+  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' }, workspaceId: WS })).ok, true)
+  await settled(setup.worker, 1)
+  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'beta', dir: '.claude/skills' }, workspaceId: WS })).ok, true)
+  await settled(setup.worker, 2)
+  const stored = storedExclusions(setup.host) as { p1: Record<string, string[]> }
+  assert.deepEqual(Object.keys(stored.p1).sort(), ['alpha', 'beta'])
   await setup.worker.deactivate()
 })
 
@@ -737,7 +743,7 @@ test('a preview that waited on the host cannot release the source an add took me
   }
   setup.lib.resolve = async () => first
   const dir = tempDir('worker-source')
-  const opened = await setup.worker.request('source.preview', { kind: 'path', text: dir })
+  const opened = await setup.worker.request('source.preview', { kind: 'path', text: dir, workspaceId: WS })
   assert.equal(opened.ok, true)
   if (!opened.ok) return
 
@@ -759,7 +765,7 @@ test('a preview that waited on the host cannot release the source an add took me
       releaseHost = resolve
     })
   }
-  const waiting = callHandler(setup, 'source.preview', { kind: 'path', text: dir })
+  const waiting = callHandler(setup, 'source.preview', { kind: 'path', text: dir, workspaceId: WS })
   await reached
   const gate = gateInstall(setup.lib)
   const add = await callHandler(setup, 'op.start', ADD(opened.previewId, ['alpha']))
@@ -798,7 +804,7 @@ test('an aborted preview releases its source instead of keeping it', async () =>
   // Le harnais ne sait pas annuler une requête : on appelle le gestionnaire du worker avec notre propre signal.
   const controller = new AbortController()
 
-  const pending = callHandler(setup, 'source.preview', { kind: 'path', text: tempDir('worker-source') }, controller.signal)
+  const pending = callHandler(setup, 'source.preview', { kind: 'path', text: tempDir('worker-source'), workspaceId: WS }, controller.signal)
   await started
   controller.abort()
   release()
@@ -817,7 +823,7 @@ test('deactivate releases an open preview', async () => {
     disposed++
   }
   setup.lib.resolve = async () => source
-  assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source') })).ok, true)
+  assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source'), workspaceId: WS })).ok, true)
   assert.equal(disposed, 0)
   await setup.worker.deactivate()
   assert.equal(disposed, 1)
@@ -827,26 +833,26 @@ test('every refused preview and start is logged on one line', async () => {
   const setup = await boot()
   const logged = (needle: string): boolean => setup.worker.logs.some((line) => line.includes(needle) && !line.includes('\n'))
 
-  await setup.worker.request('source.preview', { kind: 'path', text: '/no/such/folder' })
+  await setup.worker.request('source.preview', { kind: 'path', text: '/no/such/folder', workspaceId: WS })
   assert.ok(logged('op=preview error=path-not-found'))
 
   setup.lib.resolve = async () => setup.lib.source([{ name: 'alpha' }])
-  await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'ghost' })
+  await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'ghost', workspaceId: WS })
   assert.ok(logged('op=preview error=lib lib=SKILLS_NO_MATCHING_SKILLS'))
 
   const gate = gateInstall(setup.lib)
   writeSkill(setup.root, '.claude/skills', 'beta')
   const previewId = await previewAdd(setup, ['alpha'])
   await setup.worker.request('op.start', ADD(previewId, ['alpha']))
-  await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source') })
+  await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source'), workspaceId: WS })
   assert.ok(logged('op=preview error=busy'))
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' } })
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'beta' }, workspaceId: WS })
   assert.ok(logged('op=remove folder=beta error=busy'))
   gate.release()
   await settled(setup.worker)
 
   setup.focus('identity:none', [])
-  await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source') })
+  await setup.worker.request('source.preview', { kind: 'path', text: tempDir('worker-source'), workspaceId: WS })
   assert.ok(logged('op=preview error=no-workspace'))
   await setup.worker.deactivate()
 })
@@ -898,7 +904,7 @@ test('a gesture whose exclusions cannot be written still succeeds, with a warnin
   const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
   writeSkill(setup.root, '.agents/skills', 'alpha')
   setup.controls.failStorageSet = true
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' } })
+  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
   const finished = await settled(setup.worker)
   assert.equal(finished.ok, true)
   assert.deepEqual(
@@ -940,7 +946,7 @@ test('path.check says whether a typed path is a folder, without reading it as a 
   mkdirSync(join(setup.root, 'skills-here'))
   writeFileSync(join(setup.root, 'a-file.txt'), 'x')
   mkdirSync(join(setup.home, 'dev'))
-  const check = (text: string) => setup.worker.request('path.check', { text })
+  const check = (text: string) => setup.worker.request('path.check', { text, workspaceId: WS })
   assert.deepEqual(await check('./skills-here'), { exists: true })
   assert.deepEqual(await check(join(setup.root, 'skills-here')), { exists: true })
   assert.deepEqual(await check('~/dev'), { exists: true })
@@ -951,5 +957,104 @@ test('path.check says whether a typed path is a folder, without reading it as a 
   assert.deepEqual(setup.lib.calls.stage, [])
   setup.focus('identity:none', [])
   assert.deepEqual(await check('./skills-here'), { exists: false })
+  await setup.worker.deactivate()
+})
+
+/** Un second espace (`identity:b`, autre projet) vers lequel le focus bascule, avec son propre `alpha`. */
+function moveFocusToB(setup: Setup): string {
+  const rootB = tempDir('worker-project-b')
+  writeSkill(rootB, '.claude/skills', 'alpha')
+  setup.focus('identity:b', [rowOf(setup.root), rowOf(rootB, { id: 'identity:b', projectId: 'p2', name: 'other' })])
+  return rootB
+}
+
+test('a confirmed removal decided in workspace A touches nothing once the focus is on B', async () => {
+  const setup = await boot()
+  writeSkill(setup.root, '.claude/skills', 'alpha')
+  const rootB = moveFocusToB(setup)
+  const answer = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
+  assert.deepEqual(answer, { ok: false, error: { code: 'workspace-changed' } })
+  assert.equal(setup.trash.trashed.length, 0)
+  assert.equal(setup.lib.calls.untrack.length, 0)
+  assert.equal(finishedOps(setup.worker).length, 0)
+  assert.deepEqual(readdirSync(join(rootB, '.claude/skills')), ['alpha'])
+  assert.deepEqual(readdirSync(join(setup.root, '.claude/skills')), ['alpha'])
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=remove folder=alpha error=workspace-changed')))
+  // Le même geste, décidé sur l'espace montré maintenant, passe.
+  const retry = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: 'identity:b' })
+  assert.equal(retry.ok, true)
+  await settled(setup.worker)
+  await setup.worker.deactivate()
+})
+
+test('the state tells the id of the focused workspace', async () => {
+  const setup = await boot()
+  const state = await stateOf(setup.worker)
+  assert.equal(state.workspace.status === 'ready' ? state.workspace.id : null, WS)
+  await setup.worker.deactivate()
+})
+
+test('a preview asked for a workspace that is no longer focused opens nothing', async () => {
+  const setup = await boot()
+  const { dir } = previewable(setup, ['alpha'])
+  let resolved = 0
+  const resolve = setup.lib.resolve
+  setup.lib.resolve = async (...args) => {
+    resolved++
+    return resolve(...args)
+  }
+  moveFocusToB(setup)
+  const answer = await setup.worker.request('source.preview', { kind: 'path', text: dir, workspaceId: WS })
+  assert.deepEqual(answer, { ok: false, error: { code: 'workspace-changed' } })
+  assert.equal(resolved, 0)
+  const remote = await setup.worker.request('source.preview', { kind: 'remote', source: 'owner/repo', skillId: 'alpha', workspaceId: WS })
+  assert.deepEqual(remote, { ok: false, error: { code: 'workspace-changed' } })
+  assert.equal(resolved, 0)
+  await setup.worker.deactivate()
+})
+
+test('a preview made in A is never installed into B', async () => {
+  const setup = await boot()
+  const previewId = await previewAdd(setup, ['beta'])
+  const rootB = moveFocusToB(setup)
+  // Ni avec l'identifiant de A (le focus a bougé), ni avec celui de B (l'aperçu a été lu pour A).
+  assert.deepEqual(await setup.worker.request('op.start', ADD(previewId, ['beta'])), { ok: false, error: { code: 'workspace-changed' } })
+  assert.deepEqual(await setup.worker.request('op.start', { ...ADD(previewId, ['beta']), workspaceId: 'identity:b' }), { ok: false, error: { code: 'workspace-changed' } })
+  assert.equal(setup.lib.calls.install.length, 0)
+  assert.equal(setup.lib.calls.stage.length, 0)
+  assert.deepEqual(readdirSync(join(rootB, '.claude/skills')), ['alpha'])
+  assert.equal(existsSync(join(setup.root, '.claude/skills/beta')), false)
+  // L'aperçu de A a été rendu avec le refus.
+  assert.deepEqual(await setup.worker.request('op.start', { ...ADD(previewId, ['beta']), workspaceId: 'identity:b' }), { ok: false, error: { code: 'preview-expired' } })
+  await setup.worker.deactivate()
+})
+
+test('a path check asked for a workspace that is no longer focused is refused', async () => {
+  const setup = await boot()
+  const dir = tempDir('worker-source')
+  moveFocusToB(setup)
+  assert.deepEqual(await setup.worker.request('path.check', { text: dir, workspaceId: WS }), { exists: false, error: { code: 'workspace-changed' } })
+  assert.deepEqual(await setup.worker.request('path.check', { text: dir, workspaceId: 'identity:b' }), { exists: true })
+  await setup.worker.deactivate()
+})
+
+test('a source inside a managed folder of the project is refused before it is read', async () => {
+  const setup = await boot()
+  const inside = join(writeSkill(setup.root, '.claude/skills', 'alpha'), '..')
+  let resolved = 0
+  setup.lib.resolve = async () => {
+    resolved++
+    return setup.lib.source([{ name: 'alpha' }])
+  }
+  const sub = writeSkill(setup.root, '.agents/skills', 'beta')
+  for (const text of [inside, sub, join(setup.root, '.claude/skills/alpha'), '.claude/skills']) {
+    assert.deepEqual(await setup.worker.request('source.preview', { kind: 'path', text, workspaceId: WS }), { ok: false, error: { code: 'source-in-project' } }, text)
+  }
+  assert.equal(resolved, 0)
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=preview error=source-in-project')))
+  // Un dossier du projet hors des dossiers gérés reste une source valable.
+  const outside = join(setup.root, 'my-skills')
+  mkdirSync(outside)
+  assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: outside, workspaceId: WS })).ok, true)
   await setup.worker.deactivate()
 })

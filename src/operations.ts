@@ -14,6 +14,8 @@ export type OpError = {
   code:
     | 'busy'
     | 'no-workspace'
+    | 'workspace-changed'
+    | 'source-in-project'
     | 'collision'
     | 'no-trash'
     | 'unsafe-dir'

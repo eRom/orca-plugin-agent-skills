@@ -3,22 +3,22 @@
 // pour les vraies, et les tests pour les factices. Aucune surveillance du disque en V1 : l'état est relu à l'ouverture du
 // panneau, au changement d'espace, après chaque geste et sur demande (spec §5.2).
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, stat } from 'node:fs/promises'
+import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { JsonValue, OrcaWorkerApi } from 'orca/worker'
 import { agentById } from './agents'
-import { EXCLUSIONS_KEY, exclude, excludedOf, include, parseExclusions, pruneSeen, type Exclusions } from './exclusions'
+import { EXCLUSIONS_KEY, exclude, excludedOf, include, parseExclusions, type Exclusions } from './exclusions'
 import { detectAgents, type Inventory, type InventoryDeps } from './inventory'
 import { addSkills, keepVersion, propagate, removeFromDir, removeSkill, type OpContext, type OpError, type OpResult } from './operations'
-import { abbreviateHome, resolveInputPath } from './paths'
+import { abbreviateHome, isInside, resolveInputPath } from './paths'
 import type { AgentView, OpFinished, OpRequest, PanelState, PreviewAnswer, PreviewRequest, SearchAnswer, StartAnswer } from './protocol'
 import { scanWorkspace } from './scan'
 import { searchSkills, SearchError } from './search'
-import { FALLBACK_DIRS, skillCapable, TRUST_GATED, writeSet, type ManagedDir } from './skill-dirs'
+import { FALLBACK_DIRS, MANAGED_DIRS, skillCapable, TRUST_GATED, writeSet, type ManagedDir } from './skill-dirs'
 import { sanitizeName, toLibDiagnostic, type LibDiagnostic, type ResolvedSource, type SkillsLib } from './skills-lib'
 import type { Trasher } from './trash'
 import { buildRows, type LockEntry, type SourceLabel } from './visibility'
-import { resolveWorkspace, type HostCall } from './workspace'
+import { resolveWorkspace, type FocusedWorkspace, type HostCall } from './workspace'
 
 export type WorkerDeps = {
   lib: SkillsLib
@@ -28,7 +28,7 @@ export type WorkerDeps = {
   /** `null` : pas de sélecteur de dossier natif sur cette machine. */
   pickFolder: (() => Promise<string | null>) | null
   fetch: typeof fetch
-  /** Base de l'API de recherche (`https://skills.sh`, surchargée par `SKILLS_API_URL` dans le worker réel). */
+  /** Base de l'API de recherche (`https://skills.sh` dans le worker réel, un serveur local dans les tests). */
   searchBase: string
   home: string
   tmpdir: string
@@ -40,7 +40,8 @@ const INVENTORY_TTL_MS = 10_000
 const PREVIEW_TTL_MS = 10 * 60_000
 
 type Stage = Awaited<ReturnType<SkillsLib['stage']>>
-type Preview = { id: string; source: ResolvedSource; timer: ReturnType<typeof setTimeout> | null }
+/** `workspaceId` et `root` : l'espace pour lequel la source a été lue ; un ajout n'écrit jamais ailleurs. */
+type Preview = { id: string; source: ResolvedSource; workspaceId: string; root: string; timer: ReturnType<typeof setTimeout> | null }
 type Agents = { active: string[]; fallback: boolean; writeDirs: readonly ManagedDir[] }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
@@ -52,6 +53,24 @@ function describeError(error: OpError): string {
   return `error=${error.code}${codes ? ` lib=${codes}` : ''}${error.trashed ? ' trashed' : ''}`
 }
 const folderOf = (op: OpRequest): string => (op.kind === 'add' ? op.names.join(',') : op.folder)
+const WORKSPACE_CHANGED: OpError = { code: 'workspace-changed' }
+
+/** Vrai si l'espace focalisé est celui que le panneau montrait (même identifiant) : tout autre focus refuse le geste. */
+const isShownWorkspace = (focused: FocusedWorkspace, workspaceId: string): boolean => focused.view.status === 'ready' && focused.view.id === workspaceId
+
+/** Vrai si `path` est (ou se trouve sous) un dossier géré du projet : une source n'y est pas lue, un remplacement la mettrait à la Corbeille. */
+async function isInsideManagedDir(path: string, root: string): Promise<boolean> {
+  const rootReal = await realpath(root).catch(() => null)
+  const pathReal = await realpath(path).catch(() => null)
+  if (rootReal === null || pathReal === null) return false
+  for (const dir of MANAGED_DIRS) {
+    const expected = join(rootReal, dir)
+    if (isInside(pathReal, expected)) return true
+    const dirReal = await realpath(expected).catch(() => null)
+    if (dirReal !== null && isInside(pathReal, dirReal)) return true
+  }
+  return false
+}
 
 /** Dernière activation : `deactivate` libère ce qu'elle tient (aperçu ouvert, minuteur). */
 let teardown: (() => Promise<void>) | null = null
@@ -127,7 +146,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
 
   // --- Stockage : une seule file pour toute écriture ---
 
-  /** Les écritures (et les relectures qui peuvent en déclencher une) passent une par une : pas d'exclusion perdue. */
+  /** Les écritures passent une par une (lecture puis écriture des exclusions) : pas d'exclusion perdue. */
   function serialize<T>(task: () => Promise<T>): Promise<T> {
     const run = writing.then(task)
     writing = run.catch(() => undefined)
@@ -162,10 +181,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       return spec ? [{ id, label: spec.label, icon: spec.icon, trust: TRUST_GATED[id] ?? null }] : []
     })
 
-  /**
-   * L'état est relu sur le disque, dans la file d'écriture : un geste qui finit ne s'intercale pas entre la lecture des
-   * exclusions et leur élagage, donc `pruneSeen` ne lève jamais une exclusion qu'un geste vient de poser.
-   */
+  /** L'état est relu sur le disque ; une lecture n'écrit jamais : une exclusion ne tombe que par un geste (spec §5.4). */
   async function currentState(force = false): Promise<PanelState> {
     const focused = await focusedWorkspace()
     const agents = await agentsOf(force)
@@ -178,15 +194,12 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     if (!('root' in focused)) return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current }
 
     const { root, projectKey } = focused
-    return serialize(async () => {
-      const scan = await scanWorkspace(root)
-      const { lock, unreadable } = await readLock(root)
-      const stored = await readExclusions()
-      const rows = buildRows(scan, lock, agents.active, (folder) => excludedOf(stored, projectKey, folder), deps.home)
-      const pruned = pruneSeen(stored, projectKey, rows)
-      if (pruned !== stored) await writeExclusions(pruned)
-      return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current }
-    })
+    const scan = await scanWorkspace(root)
+    const { lock, unreadable } = await readLock(root)
+    const stored = await readExclusions()
+    // Le disque prime à l'affichage (un agent qui voit la skill n'est jamais « exclu ») sans que le stockage change.
+    const rows = buildRows(scan, lock, agents.active, (folder) => excludedOf(stored, projectKey, folder), deps.home)
+    return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current }
   }
 
   /** Poste l'état au panneau ; un calcul plus récent lancé entre-temps prime. */
@@ -237,6 +250,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     if (addRunning()) return { ok: false, error: { code: 'busy' } }
     const focused = await focusedWorkspace()
     if (!('root' in focused)) return { ok: false, error: { code: 'no-workspace' } }
+    if (!isShownWorkspace(focused, request.workspaceId)) return { ok: false, error: WORKSPACE_CHANGED }
     // Un ajout a pu démarrer pendant l'attente ci-dessus et prendre la source courante : le contrôle est refait, de façon
     // synchrone avec la libération, pour qu'aucun `await` ne s'intercale entre les deux.
     if (addRunning()) return { ok: false, error: { code: 'busy' } }
@@ -248,6 +262,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     if (request.kind === 'path') {
       input = resolveInputPath(request.text.trim(), focused.root, deps.home)
       if (!(await stat(input).catch(() => null))) return { ok: false, error: { code: 'path-not-found' } }
+      if (await isInsideManagedDir(input, focused.root)) return { ok: false, error: { code: 'source-in-project' } }
       label = { kind: 'local', path: abbreviateHome(input, deps.home) }
     } else {
       input = request.source
@@ -277,7 +292,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       await source.dispose().catch(() => undefined)
       return { ok: false, error: { code: 'preview-expired' } }
     }
-    const held: Preview = { id: randomUUID(), source, timer: null }
+    const held: Preview = { id: randomUUID(), source, workspaceId: request.workspaceId, root: focused.root, timer: null }
     armPreview(held)
     preview = held
     return { ok: true, previewId: held.id, label, skills, preselected: skills.map((skill) => skill.name) }
@@ -330,9 +345,10 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     }
   })
 
-  orca.panels.handle('path.check', async ({ text }) => {
+  orca.panels.handle('path.check', async ({ text, workspaceId }) => {
     const focused = await focusedWorkspace()
     if (!('root' in focused)) return { exists: false }
+    if (!isShownWorkspace(focused, workspaceId)) return { exists: false, error: WORKSPACE_CHANGED }
     const info = await stat(resolveInputPath(text.trim(), focused.root, deps.home)).catch(() => null)
     return { exists: info?.isDirectory() ?? false }
   })
@@ -467,13 +483,15 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     await postStateSafely()
   }
 
-  async function startOp(op: OpRequest): Promise<StartAnswer> {
+  async function startOp(op: OpRequest, workspaceId: string): Promise<StartAnswer> {
     const refuse = (error: OpError): StartAnswer => {
       logError(op, error)
       return { ok: false, error }
     }
     const focused = await focusedWorkspace()
     if (!('root' in focused)) return refuse({ code: 'no-workspace' })
+    // Le geste a été décidé sur l'espace que le panneau montrait : si le focus a bougé depuis, rien n'est touché.
+    if (!isShownWorkspace(focused, workspaceId)) return refuse(WORKSPACE_CHANGED)
     const agents = await agentsOf()
     let ctx: OpContext = {
       root: focused.root,
@@ -489,6 +507,11 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     if (op.kind === 'add') {
       held = preview?.id === op.previewId ? preview : null
       if (!held) return refuse({ code: 'preview-expired' })
+      // Un aperçu lu pour un autre espace n'est jamais ajouté ici : il est rendu avec le refus.
+      if (held.workspaceId !== workspaceId || held.root !== focused.root) {
+        releasePreview()
+        return refuse(WORKSPACE_CHANGED)
+      }
       // Le minuteur ne doit pas rendre la source en plein geste ; un refus le réarme.
       if (held.timer) clearTimeout(held.timer)
       let prepared: Awaited<ReturnType<typeof prepareAdd>>
@@ -513,7 +536,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     return { ok: true, opId }
   }
 
-  orca.panels.handle('op.start', async ({ op }): Promise<StartAnswer> => {
+  orca.panels.handle('op.start', async ({ op, workspaceId }): Promise<StartAnswer> => {
     if (current) {
       logError(op, { code: 'busy' })
       return { ok: false, error: { code: 'busy' } }
@@ -522,7 +545,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     current = op
     let started = false
     try {
-      const answer = await startOp(op)
+      const answer = await startOp(op, workspaceId)
       started = answer.ok
       return answer
     } catch (error) {

@@ -23,7 +23,8 @@ export type PanelState = {
 
 export type SearchAnswer = { ok: true; hits: (SearchHit & { installed: boolean })[] } | { ok: false; error: SearchError['code'] }
 
-export type PreviewRequest = { kind: 'remote'; source: string; skillId: string } | { kind: 'path'; text: string }
+/** `workspaceId` : l'espace que le panneau montrait ; le worker refuse (`workspace-changed`) si le focus a bougé depuis. */
+export type PreviewRequest = { workspaceId: string } & ({ kind: 'remote'; source: string; skillId: string } | { kind: 'path'; text: string })
 
 export type PreviewAnswer =
   | { ok: true; previewId: string; label: SourceLabel; skills: { name: string; description: string }[]; preselected: string[] }
@@ -51,10 +52,10 @@ declare module 'orca' {
     'search': { input: { query: string }; output: SearchAnswer }
     'source.preview': { input: PreviewRequest; output: PreviewAnswer }
     /** Répond tout de suite (sauf pour `add`, dont l'essai et le contrôle de collision précèdent la réponse) ; `op.finished` suit. */
-    'op.start': { input: { op: OpRequest }; output: StartAnswer }
+    'op.start': { input: { op: OpRequest; workspaceId: string }; output: StartAnswer }
     'folder.pick': { output: { path: string | null } }
-    /** Vrai si le texte tapé désigne un dossier (relatif à l'espace, ou `~`) : un `stat`, la source n'est pas lue. */
-    'path.check': { input: { text: string }; output: { exists: boolean } }
+    /** Vrai si le texte tapé désigne un dossier (relatif à l'espace, ou `~`) : un `stat`, la source n'est pas lue. `error` : l'espace a changé. */
+    'path.check': { input: { text: string; workspaceId: string }; output: { exists: boolean; error?: OpError } }
   }
   interface PluginPanelEvents {
     'state.changed': PanelState
