@@ -934,3 +934,22 @@ test('folder.pick returns the chosen path, null when cancelled or unavailable', 
   assert.deepEqual(await none.worker.request('folder.pick'), { path: null })
   await none.worker.deactivate()
 })
+
+test('path.check says whether a typed path is a folder, without reading it as a source', async () => {
+  const setup = await boot()
+  mkdirSync(join(setup.root, 'skills-here'))
+  writeFileSync(join(setup.root, 'a-file.txt'), 'x')
+  mkdirSync(join(setup.home, 'dev'))
+  const check = (text: string) => setup.worker.request('path.check', { text })
+  assert.deepEqual(await check('./skills-here'), { exists: true })
+  assert.deepEqual(await check(join(setup.root, 'skills-here')), { exists: true })
+  assert.deepEqual(await check('~/dev'), { exists: true })
+  assert.deepEqual(await check(`  ${join(setup.home, 'dev')}/  `), { exists: true })
+  assert.deepEqual(await check('./nowhere'), { exists: false })
+  assert.deepEqual(await check('./a-file.txt'), { exists: false })
+  // Rien n'est résolu ni copié : la bibliothèque n'est pas touchée.
+  assert.deepEqual(setup.lib.calls.stage, [])
+  setup.focus('identity:none', [])
+  assert.deepEqual(await check('./skills-here'), { exists: false })
+  await setup.worker.deactivate()
+})

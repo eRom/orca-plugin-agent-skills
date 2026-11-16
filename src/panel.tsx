@@ -3,7 +3,7 @@
 import { Button, Callout, EmptyState, IconButton, read, Row, Skeleton, Stack, Text, Box } from 'orca'
 import { currentLocale, copy } from './panel-copy'
 import { renderProgress, renderNote, renderRow, type RowContext } from './panel-row'
-import { renderAddFlow, renderReplaceConfirm, renderResults, renderSearchField } from './panel-search'
+import { renderAddFlow, renderPathLine, renderReplaceConfirm, renderResults, renderSearchField } from './panel-search'
 import {
   addFlow,
   addNote,
@@ -13,6 +13,7 @@ import {
   MIN_QUERY_LENGTH,
   notes,
   panelState,
+  pathCheck,
   pending,
   query,
   refreshing,
@@ -113,6 +114,7 @@ function renderReady(state: PanelState) {
       {renderNote('add-note', read(addNote), m)}
       {renderOrphanNotes(state)}
       {renderAddFlow(flow, busy, m)}
+      {flow === null ? renderPathLine(read(pathCheck), busy, m) : null}
       {/* Ce que le champ contient décide du corps : rien, la liste du projet ; un chemin, la ligne d'ajout ci-dessus ; sinon les résultats. */}
       {typing ? (isPathInput(text.trim()) ? null : renderResults(read(searchView), busy, flow?.status === 'loading', currentLocale(), m)) : renderList(state, ctx)}
     </Stack>

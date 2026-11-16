@@ -8,10 +8,12 @@ import {
   clearQuery,
   onQueryChange,
   pickFolder,
+  readPath,
   startOp,
   submitQuery,
   toggleSkill,
   type AddFlow,
+  type PathCheck,
   type Confirm,
   type SearchView
 } from './panel-state'
@@ -106,7 +108,7 @@ export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: M
   if (flow === null) return null
   if (flow.status === 'loading') {
     // Un ajout depuis skills.sh lit la source avant de s'engager ; un chemin se lit pendant la frappe.
-    return renderProgress('add-flow-loading', flow.origin === 'hit' ? m.adding : m.searching)
+    return renderProgress('add-flow-loading', flow.origin === 'hit' ? m.adding : m.reading)
   }
   if (flow.status === 'failed') {
     if (flow.error?.code === 'path-not-found') {
@@ -118,7 +120,6 @@ export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: M
     }
     return renderNote('add-flow-failed', { error: flow.error, message: flow.message, warnings: [] }, m)
   }
-  const single = flow.skills.length === 1 ? flow.skills[0]! : null
   const count = flow.selected.length
   return (
     <Box key="add-flow" border radius="md" padding="sm" gap="sm" background="muted">
@@ -126,15 +127,9 @@ export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: M
         {m.addFromFolder}
       </Text>
       <Code>{sourceText(flow.label)}</Code>
-      {single ? (
-        <Text muted size="xs">
-          {single.name}
-        </Text>
-      ) : (
-        flow.skills.map((skill) => (
+      {flow.skills.map((skill) => (
           <Checkbox key={`check-${skill.name}`} label={skill.name} description={skill.description === '' ? undefined : skill.description} checked={flow.selected.includes(skill.name)} disabled={busy !== null} onChange={(checked) => toggleSkill(skill.name, checked)} />
-        ))
-      )}
+      ))}
       <Row>
         <Button
           key="add-path"
@@ -142,7 +137,7 @@ export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: M
           disabled={busy !== null || count === 0}
           onPress={() => startOp({ kind: 'add', previewId: flow.previewId, names: flow.selected, replace: false })}
         >
-          {single ? m.add : m.addCount(count)}
+          {m.addCount(count)}
         </Button>
       </Row>
     </Box>
@@ -166,5 +161,33 @@ export function renderReplaceConfirm(confirm: Confirm | null, m: Messages) {
         </Row>
       </Stack>
     </Callout>
+  )
+}
+
+/**
+ * Un chemin tapé : une seule ligne « Ajouter depuis ce dossier » avec le chemin, ou « Dossier introuvable » sans geste.
+ * La source n'est lue qu'à l'appui sur la ligne (ou Entrée).
+ */
+export function renderPathLine(check: PathCheck | null, busy: OpRequest | null, m: Messages) {
+  if (check === null || check.status === 'checking') return null
+  if (check.status === 'missing') {
+    return (
+      <Text tone="danger" size="sm">
+        {m.folderNotFound}
+      </Text>
+    )
+  }
+  return (
+    <Box key="path-line" border radius="md" padding="sm" gap="sm" background="muted">
+      <Text weight="semibold" size="sm">
+        {m.addFromFolder}
+      </Text>
+      <Code>{check.text}</Code>
+      <Row>
+        <Button key="read-path" size="sm" disabled={busy !== null} onPress={() => readPath(check.text)}>
+          {m.add}
+        </Button>
+      </Row>
+    </Box>
   )
 }

@@ -3,7 +3,7 @@
 import { atom, plugin, set, update, type PanelContext } from 'orca'
 import type { OpError } from './operations'
 import { isPathInput } from './path-input'
-import type { OpFinished, OpRequest, PanelState, PreviewAnswer, SearchAnswer, StartAnswer } from './protocol'
+import type { OpFinished, OpRequest, PanelState, PreviewAnswer, PreviewRequest, SearchAnswer, StartAnswer } from './protocol'
 import type { ManagedDir } from './skill-dirs'
 import type { LibDiagnostic } from './skills-lib'
 import type { SourceLabel } from './visibility'
@@ -29,6 +29,8 @@ export type AddFlow =
   | { status: 'failed'; error: OpError | null; message: string | null }
   | { status: 'ready'; origin: 'path' | 'hit'; previewId: string; label: SourceLabel; skills: { name: string; description: string }[]; selected: string[] }
 
+export type PathCheck = { status: 'checking' } | { status: 'found'; text: string } | { status: 'missing' }
+
 /** Confirmation en ligne : un seul geste destructeur à la fois attend un oui. */
 export type Confirm =
   | { kind: 'replace'; previewId: string; names: string[]; folders: string[] }
@@ -48,6 +50,8 @@ export const refreshing = atom(false)
 export const query = atom('')
 export const searchView = atom<SearchView>({ status: 'idle' })
 export const addFlow = atom<AddFlow | null>(null)
+/** Ce que `path.check` a répondu pour le chemin tapé : la ligne « Ajouter depuis ce dossier » ou « Dossier introuvable ». */
+export const pathCheck = atom<PathCheck | null>(null)
 export const confirmation = atom<Confirm | null>(null)
 /** Le geste lancé par ce panneau, de l'appui jusqu'à `op.finished` ; `panelState.busy` dit celui du worker. */
 export const pending = atom<OpRequest | null>(null)
@@ -75,6 +79,8 @@ let currentQuery = ''
 let workspaceKey: string | null = null
 /** Numéro de la dernière lecture d'état demandée : une lecture plus ancienne qui finit après n'est pas gardée. */
 let stateTicket = 0
+/** Vrai entre l'appui et la réponse de `op.start` : un état poussé alors ne dit rien du geste qui part. */
+let starting = false
 
 function stopTimer(): void {
   if (searchTimer !== null) clearTimeout(searchTimer)
@@ -90,6 +96,7 @@ function supersede(): number {
 
 function resetField(): void {
   supersede()
+  set(pathCheck, null)
   currentQuery = ''
   set(query, '')
   set(searchView, { status: 'idle' })
@@ -110,11 +117,19 @@ function resetAll(): void {
 // --- État ---
 
 function applyState(next: PanelState): void {
+  // Le worker ne tient aucun geste (redémarré en plein geste, ou fini sans que `op.finished` nous soit parvenu) : ne plus attendre.
+  if (next.busy === null && !starting) set(pending, null)
   const key = JSON.stringify(next.workspace)
   if (workspaceKey !== null && key !== workspaceKey) resetAll()
   workspaceKey = key
   set(panelState, next)
   set(loadError, null)
+}
+
+/** Un état poussé par le worker est plus récent que toute lecture encore en vol : celle-ci ne doit pas l'écraser. */
+function applyPushed(next: PanelState): void {
+  stateTicket += 1
+  applyState(next)
 }
 
 export async function loadState(request: 'state.get' | 'state.refresh' = 'state.get'): Promise<void> {
@@ -151,28 +166,29 @@ async function runSearch(text: string, gen: number): Promise<void> {
   }
 }
 
-async function runPathPreview(text: string, gen: number): Promise<void> {
-  set(addFlow, { status: 'loading', origin: 'path' })
-  let answer: PreviewAnswer
+/** Un chemin tapé n'est pas lu comme une source : un `stat` côté worker dit seulement si le dossier existe. */
+async function runPathCheck(text: string, gen: number): Promise<void> {
+  set(pathCheck, { status: 'checking' })
   try {
-    answer = await plugin.request('source.preview', { kind: 'path', text }, { timeoutMs: LONG_TIMEOUT_MS })
+    const answer = await plugin.request('path.check', { text })
+    if (gen !== generation) return
+    set(pathCheck, answer.exists ? { status: 'found', text } : { status: 'missing' })
   } catch (error) {
-    if (gen === generation) set(addFlow, { status: 'failed', error: null, message: messageOf(error) })
-    return
+    if (gen !== generation) return
+    set(pathCheck, null)
+    set(addNote, { ...emptyNote(), message: messageOf(error) })
   }
-  if (gen !== generation) return
-  if (!answer.ok) set(addFlow, { status: 'failed', error: answer.error, message: null })
-  else set(addFlow, { status: 'ready', origin: 'path', previewId: answer.previewId, label: answer.label, skills: answer.skills, selected: answer.preselected })
 }
 
 function run(text: string, gen: number): void {
-  void (isPathInput(text) ? runPathPreview(text, gen) : runSearch(text, gen))
+  void (isPathInput(text) ? runPathCheck(text, gen) : runSearch(text, gen))
 }
 
 /** Lance la recherche ou l'aperçu pour le texte du champ, après `delay` ms ; en dessous du minimum, la liste du projet revient. */
 function schedule(value: string, delay: number): void {
   const gen = supersede()
   set(searchView, { status: 'idle' })
+  set(pathCheck, null)
   set(addFlow, null)
   const text = value.trim()
   if (text.length < MIN_QUERY_LENGTH) return
@@ -191,9 +207,14 @@ export function onQueryChange(value: string): void {
   schedule(value, SEARCH_DELAY_MS)
 }
 
-/** Entrée : sans attendre la pause de frappe. */
+/** Entrée : sans attendre la pause de frappe ; sur un chemin, comme un appui sur la ligne « Ajouter depuis ce dossier ». */
 export function submitQuery(value: string): void {
   currentQuery = value
+  const text = value.trim()
+  if (text.length >= MIN_QUERY_LENGTH && isPathInput(text)) {
+    void readPath(text)
+    return
+  }
   schedule(value, 0)
 }
 
@@ -201,7 +222,7 @@ export function clearQuery(): void {
   resetField()
 }
 
-/** Bouton dossier : le chemin choisi va dans le champ et part en aperçu tout de suite. */
+/** Bouton dossier : le chemin choisi va dans le champ, la ligne « Ajouter depuis ce dossier » apparaît (comme après une frappe). */
 export async function pickFolder(): Promise<void> {
   try {
     const answer = await plugin.request('folder.pick', undefined, { timeoutMs: LONG_TIMEOUT_MS })
@@ -246,13 +267,16 @@ export async function startOp(op: OpRequest): Promise<void> {
   set(confirmation, null)
   putNote(folderOf(op), null)
   let answer: StartAnswer
+  starting = true
   try {
     answer = await plugin.request('op.start', { op }, { timeoutMs: LONG_TIMEOUT_MS })
   } catch (error) {
+    starting = false
     set(pending, null)
     putNote(folderOf(op), { ...emptyNote(), message: messageOf(error) })
     return
   }
+  starting = false
   if (answer.ok) return
   set(pending, null)
   if (op.kind === 'add' && answer.error.code === 'collision') {
@@ -262,34 +286,44 @@ export async function startOp(op: OpRequest): Promise<void> {
   putNote(folderOf(op), { ...emptyNote(), error: answer.error })
 }
 
-/** « Ajouter » d'un résultat de skills.sh : aperçu de la source, puis ajout direct quand elle ne porte qu'une skill. */
-export async function addHit(hit: { source: string; skillId: string }): Promise<void> {
+/**
+ * Lit une source (appui sur la ligne d'un chemin, ou « Ajouter » d'un résultat de skills.sh) : ajout direct quand elle ne porte
+ * qu'une skill, liste à cases quand elle en porte plusieurs. Un chemin garde son échec dans le champ, un résultat sous le champ.
+ */
+async function readSource(request: PreviewRequest, origin: 'path' | 'hit'): Promise<void> {
   const gen = supersede()
   set(addNote, null)
-  set(addFlow, { status: 'loading', origin: 'hit' })
+  set(pathCheck, null)
+  set(addFlow, { status: 'loading', origin })
+  const fail = (error: OpError | null, message: string | null): void => {
+    if (origin === 'path') set(addFlow, { status: 'failed', error, message })
+    else {
+      set(addFlow, null)
+      set(addNote, { ...emptyNote(), error, message })
+    }
+  }
   let answer: PreviewAnswer
   try {
-    answer = await plugin.request('source.preview', { kind: 'remote', source: hit.source, skillId: hit.skillId }, { timeoutMs: LONG_TIMEOUT_MS })
+    answer = await plugin.request('source.preview', request, { timeoutMs: LONG_TIMEOUT_MS })
   } catch (error) {
-    if (gen !== generation) return
-    set(addFlow, null)
-    set(addNote, { ...emptyNote(), message: messageOf(error) })
+    if (gen === generation) fail(null, messageOf(error))
     return
   }
   if (gen !== generation) return
-  if (!answer.ok) {
-    set(addFlow, null)
-    set(addNote, { ...emptyNote(), error: answer.error })
-    return
-  }
+  if (!answer.ok) return fail(answer.error, null)
   const [only] = answer.skills
   if (only && answer.skills.length === 1) {
     set(addFlow, null)
     await startOp({ kind: 'add', previewId: answer.previewId, names: [only.name], replace: false })
     return
   }
-  set(addFlow, { status: 'ready', origin: 'hit', previewId: answer.previewId, label: answer.label, skills: answer.skills, selected: answer.preselected })
+  set(addFlow, { status: 'ready', origin, previewId: answer.previewId, label: answer.label, skills: answer.skills, selected: answer.preselected })
 }
+
+export const addHit = (hit: { source: string; skillId: string }): Promise<void> => readSource({ kind: 'remote', source: hit.source, skillId: hit.skillId }, 'hit')
+
+/** Appui sur la ligne « Ajouter depuis ce dossier ». */
+export const readPath = (text: string): Promise<void> => readSource({ kind: 'path', text }, 'path')
 
 function applyFinished(finished: OpFinished): void {
   set(pending, null)
@@ -334,8 +368,9 @@ export function setup(ctx: PanelContext): void {
   currentQuery = ''
   workspaceKey = null
   stateTicket = 0
+  starting = false
   stopTimer()
-  ctx.subscriptions.push(plugin.on('state.changed', applyState))
+  ctx.subscriptions.push(plugin.on('state.changed', applyPushed))
   ctx.subscriptions.push(plugin.on('op.finished', applyFinished))
   // Une frappe encore en attente ne doit pas parler à un panneau fermé.
   ctx.subscriptions.push({ dispose: () => void supersede() })

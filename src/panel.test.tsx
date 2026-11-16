@@ -84,6 +84,8 @@ type Setup = {
   preview?: (input: PreviewRequest) => PreviewAnswer | Promise<PreviewAnswer>
   start?: (input: { op: OpRequest }) => StartAnswer | Promise<StartAnswer>
   pick?: () => { path: string | null }
+  pathCheck?: (input: { text: string }) => { exists: boolean }
+  refresh?: () => PanelState | Promise<PanelState>
   locale?: string
   theme?: 'light' | 'dark'
 }
@@ -100,6 +102,7 @@ async function open(setup: Setup = {}) {
   const log = {
     searches: [] as string[],
     previews: [] as PreviewRequest[],
+    pathChecks: [] as string[],
     ops: [] as OpRequest[],
     stateReads: [] as string[]
   }
@@ -112,11 +115,15 @@ async function open(setup: Setup = {}) {
       },
       'state.refresh': () => {
         log.stateReads.push('state.refresh')
-        return current
+        return setup.refresh ? setup.refresh() : current
       },
       search: (input: { query: string }) => {
         log.searches.push(input.query)
         return setup.search ? setup.search(input) : { ok: true as const, hits: [] }
+      },
+      'path.check': (input: { text: string }) => {
+        log.pathChecks.push(input.text)
+        return setup.pathCheck ? setup.pathCheck(input) : { exists: true }
       },
       'source.preview': (input: PreviewRequest) => {
         log.previews.push(input)
@@ -337,19 +344,56 @@ test('adding a skills.sh hit previews it, then adds it', async () => {
   await expectClean(view)
 })
 
-test('a typed path offers to add from that folder', async () => {
-  const { view, log } = await open({
+test('a typed path offers to add from that folder, and reads nothing until pressed', async () => {
+  const { view, log, host } = await open({
     preview: () => ({ ok: true, previewId: 'p7', label: { kind: 'local', path: '~/dev/tools/skills/alpha' }, skills: [{ name: 'alpha', description: 'About alpha' }], preselected: ['alpha'] })
   })
   await view.type(SEARCH_FIELD, '~/dev/tools/skills/alpha')
   await afterPause(view)
-  // Un chemin n'est jamais cherché sur skills.sh.
-  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha' }])
+  // Un chemin n'est jamais cherché sur skills.sh, et sa source n'est pas lue pendant la frappe : un `stat` suffit.
+  assert.deepEqual(log.pathChecks, ['~/dev/tools/skills/alpha'])
+  assert.deepEqual(log.previews, [])
   assert.equal(log.searches.length, 0)
   assert.notEqual(view.find({ text: FR.addFromFolder }), null)
   assert.notEqual(view.find({ type: 'Code', text: '~/dev/tools/skills/alpha' }), null)
-  await view.press({ testId: 'add-path' })
+  assert.deepEqual(log.ops, [])
+  // L'appui sur la ligne lit la source, puis ajoute directement la skill unique.
+  await view.press({ testId: 'read-path' })
+  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha' }])
   assert.deepEqual(log.ops, [{ kind: 'add', previewId: 'p7', names: ['alpha'], replace: false }])
+  const read = (host.callsOf('plugin.request') as { name: string; timeoutMs?: number }[]).find((request) => request.name === 'source.preview')
+  assert.equal(read?.timeoutMs, 120000)
+  await expectClean(view)
+})
+
+test('Enter on a path reads it like a press on the line', async () => {
+  const { view, log } = await open()
+  await view.type(SEARCH_FIELD, '~/dev/tools/skills/alpha', { submit: true })
+  assert.deepEqual(log.previews, [{ kind: 'path', text: '~/dev/tools/skills/alpha' }])
+  assert.deepEqual(log.ops, [{ kind: 'add', previewId: 'p1', names: ['alpha'], replace: false }])
+  await expectClean(view)
+})
+
+test('a folder read in flight shows a reading text, not the search one', async () => {
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const { view } = await open({
+    preview: async () => {
+      await gate
+      return ONE_SKILL('alpha')
+    }
+  })
+  await view.type(SEARCH_FIELD, '~/dev/skills')
+  await afterPause(view)
+  const pressed = view.press({ testId: 'read-path' })
+  await sleep(50)
+  assert.notEqual(view.find({ text: FR.reading }), null)
+  assert.equal(view.find({ text: FR.searching }), null)
+  release()
+  await pressed
+  assert.equal(view.find({ text: FR.reading }), null)
   await expectClean(view)
 })
 
@@ -359,15 +403,17 @@ test('a typed owner/repo is a search, not a path', async () => {
   await afterPause(view)
   assert.deepEqual(log.searches, ['acme/motion-kit'])
   assert.deepEqual(log.previews, [])
+  assert.deepEqual(log.pathChecks, [])
   await expectClean(view)
 })
 
 test('a path that does not exist says so and cannot be added', async () => {
-  const { view } = await open({ preview: () => ({ ok: false, error: { code: 'path-not-found' } }) })
+  const { view, log } = await open({ pathCheck: () => ({ exists: false }) })
   await view.type(SEARCH_FIELD, '/nowhere/at/all')
   await afterPause(view)
   assert.notEqual(view.find({ text: FR.folderNotFound }), null)
-  assert.equal(view.find({ testId: 'add-path' }), null)
+  assert.equal(view.find({ testId: 'read-path' }), null)
+  assert.deepEqual(log.previews, [])
   await expectClean(view)
 })
 
@@ -388,6 +434,7 @@ test('a multi-skill source shows checkboxes, all checked', async () => {
   })
   await view.type(SEARCH_FIELD, '~/dev/tools/skills')
   await afterPause(view)
+  await view.press({ testId: 'read-path' })
   for (const name of ['alpha', 'beta', 'gamma']) assert.equal(view.valueOf({ label: name }), true, name)
   assert.notEqual(view.find({ text: FR.addCount(3) }), null)
   await view.toggle({ label: 'beta' })
@@ -413,6 +460,7 @@ test('nothing can be added with every box unchecked', async () => {
   })
   await view.type(SEARCH_FIELD, '~/dev/tools/skills')
   await afterPause(view)
+  await view.press({ testId: 'read-path' })
   await view.toggle({ label: 'alpha' })
   await view.toggle({ label: 'beta' })
   assert.equal(view.find({ text: FR.addCount(0) })!.disabled, true)
@@ -460,12 +508,14 @@ test('confirming a collision adds again with replace', async () => {
   await expectClean(view)
 })
 
-test('the folder button fills the field with the picked path and previews it', async () => {
+test('the folder button fills the field with the picked path and shows the line, like a typed path', async () => {
   const { view, log, host } = await open({ pick: () => ({ path: '/Users/me/dev/skills/alpha' }) })
   await view.press({ label: FR.pickFolderLabel })
   assert.equal(view.valueOf(SEARCH_FIELD), '/Users/me/dev/skills/alpha')
   await afterPause(view)
-  assert.deepEqual(log.previews, [{ kind: 'path', text: '/Users/me/dev/skills/alpha' }])
+  assert.deepEqual(log.pathChecks, ['/Users/me/dev/skills/alpha'])
+  assert.deepEqual(log.previews, [])
+  assert.notEqual(view.find({ testId: 'read-path' }), null)
   const pick = (host.callsOf('plugin.request') as { name: string; timeoutMs?: number }[]).find((request) => request.name === 'folder.pick')
   assert.equal(pick?.timeoutMs, 120000)
   await expectClean(view)
@@ -815,9 +865,9 @@ test('a switch of workspace drops the half-typed add', async () => {
   })
   await view.type(SEARCH_FIELD, '~/x')
   await afterPause(view)
-  assert.notEqual(view.find({ testId: 'add-path' }), null)
+  assert.notEqual(view.find({ testId: 'read-path' }), null)
   await view.post('state.changed', stateOf({ workspace: { status: 'ready', name: 'other', branch: 'main', linkedWorktree: false } }))
-  assert.equal(view.find({ testId: 'add-path' }), null)
+  assert.equal(view.find({ testId: 'read-path' }), null)
   assert.equal(view.valueOf(SEARCH_FIELD), '')
   await expectClean(view)
 })
@@ -893,4 +943,48 @@ test('formats installs with the decimal comma in French and a point in English',
   await afterPause(en.view)
   assert.notEqual(en.view.find({ text: 'acme/audio · 916.9K' }), null)
   await expectClean(en.view)
+})
+
+test('a pushed state without a running gesture frees the buttons', async () => {
+  // Le worker a redémarré en plein geste : plus personne ne dira `op.finished`.
+  const { view } = await open()
+  await view.press({ text: FR.propagate })
+  assert.equal(view.find({ text: FR.propagate })!.disabled, true)
+  await view.post('state.changed', stateOf({ skills: [HANDWRITTEN] }))
+  assert.equal(view.find({ text: FR.propagate })!.disabled, false)
+  assert.equal(view.find({ label: FR.removeSkillLabel('motion-context') })!.disabled, false)
+  await expectClean(view)
+})
+
+test('a pushed state that still holds the gesture keeps the buttons off', async () => {
+  const { view } = await open()
+  await view.press({ text: FR.propagate })
+  const busy: OpRequest = { kind: 'propagate', folder: 'motion-context', agents: ['codex', 'grok', 'pi', 'antigravity', 'dsh'] }
+  await view.post('state.changed', stateOf({ skills: [HANDWRITTEN], overrides: { busy } }))
+  assert.equal(view.find({ text: FR.propagate })!.disabled, true)
+  await expectClean(view)
+})
+
+test('an older state read cannot overwrite a newer pushed state', async () => {
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const { view } = await open({
+    refresh: async () => {
+      await gate
+      return stateOf({ skills: [HANDWRITTEN] })
+    }
+  })
+  // La relecture part, le worker pousse un état plus récent, puis la relecture (périmée) répond.
+  const refreshing = view.press({ label: FR.refreshLabel })
+  await sleep(50)
+  const pushed = view.post('state.changed', stateOf({ skills: [] }))
+  await sleep(50)
+  release()
+  await refreshing
+  await pushed
+  assert.notEqual(view.find({ label: FR.emptyTitle }), null)
+  assert.equal(view.find({ text: 'motion-context' }), null)
+  await expectClean(view)
 })

@@ -53,6 +53,8 @@ declare module 'orca' {
     /** Répond tout de suite (sauf pour `add`, dont l'essai et le contrôle de collision précèdent la réponse) ; `op.finished` suit. */
     'op.start': { input: { op: OpRequest }; output: StartAnswer }
     'folder.pick': { output: { path: string | null } }
+    /** Vrai si le texte tapé désigne un dossier (relatif à l'espace, ou `~`) : un `stat`, la source n'est pas lue. */
+    'path.check': { input: { text: string }; output: { exists: boolean } }
   }
   interface PluginPanelEvents {
     'state.changed': PanelState

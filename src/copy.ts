@@ -68,6 +68,7 @@ export type Messages = {
 
   // Recherche et ajout.
   searching: string
+  reading: string
   searchGroup: (count: number) => string
   noResults: string
   searchUnreachable: string
@@ -186,6 +187,7 @@ const en: Messages = {
   keepsSight: (agents) => `${agents} still see it through another folder.`,
 
   searching: 'Searching...',
+  reading: 'Reading the folder...',
   searchGroup: (count) => `skills.sh · ${count}`,
   noResults: 'No result',
   searchUnreachable: 'skills.sh is not answering',
@@ -301,6 +303,7 @@ const fr: Messages = {
   keepsSight: (agents) => `${agents} la voient encore par un autre dossier.`,
 
   searching: 'Recherche…',
+  reading: 'Lecture du dossier…',
   searchGroup: (count) => `skills.sh · ${count}`,
   noResults: 'Aucun résultat',
   searchUnreachable: 'skills.sh ne répond pas',

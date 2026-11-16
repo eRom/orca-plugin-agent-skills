@@ -22390,6 +22390,13 @@ ${hit.source}`) })) };
       return { ok: false, error: error.code };
     }
   });
+  orca.panels.handle("path.check", async ({ text }) => {
+    const focused = await focusedWorkspace();
+    if (!("root" in focused))
+      return { exists: false };
+    const info = await stat4(resolveInputPath(text.trim(), focused.root, deps.home)).catch(() => null);
+    return { exists: info?.isDirectory() ?? false };
+  });
   orca.panels.handle("folder.pick", async () => {
     if (!deps.pickFolder)
       return { path: null };
