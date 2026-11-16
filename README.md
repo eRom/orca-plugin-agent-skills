@@ -22,7 +22,7 @@ Orca shows the access the plugin asks for (see [What it can access](#what-it-can
 
 - **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`) and it offers to add from that folder. The folder button opens the macOS picker.
 - **One icon per enabled agent on each skill**: full when the agent sees the skill, faded when it does not. An agent you removed the skill for on purpose has no icon: the row says "Excluded for X". The icons only display, every gesture is a button in the row.
-- **Propagate**: when an enabled agent does not see a skill, an orange banner says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
+- **Propagate**: when an enabled agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
 - **Add** from a skills.sh result or a local folder (a pasted path, or the folder button). A typed `owner/repo` is a search, not an add: pick the result you want. A source holding several skills opens a checklist, everything ticked by default.
 - **Remove** a skill for every agent, or **remove here** from one folder (an expanded row lists the folders that carry a copy and the agents each one feeds). The confirmation names the agents that lose the skill and those that still see it through another folder. An agent that lost a skill this way is remembered as excluded for that skill (see [Exclusions](#exclusions)).
 - **Diverging copies** (the same skill, different content in two folders): the row says so, shows one version per distinct content, and **Keep this one** copies it over the others. Nothing is written before you choose.
@@ -48,7 +48,7 @@ An addition writes into the **fewest folders** that cover your enabled agents, n
 
 ### Exclusions
 
-Removing a skill from one folder marks the agents that fed on it as **excluded** for that skill. They lose their icon, get no orange banner, and Propagate skips them. The expanded row offers **Reinstate X**, which copies the skill back and lifts the exclusion. The disk wins on display: an excluded agent that sees the skill again (a copy made by hand, or in another worktree) is shown as seeing it, but the exclusion itself stays stored and shows again if that copy goes away. It is lifted only by **Reinstate**, by **Propagate** for that agent, or by removing the skill everywhere. Exclusions are kept in the plugin's own storage, on this machine, per project (all its worktrees): they are not in the repository, your team does not see them.
+Removing a skill from one folder marks the agents that fed on it as **excluded** for that skill. They lose their icon, get no warning, and Propagate skips them. The expanded row offers **Reinstate X**, which copies the skill back and lifts the exclusion. The disk wins on display: an excluded agent that sees the skill again (a copy made by hand, or in another worktree) is shown as seeing it, but the exclusion itself stays stored and shows again if that copy goes away. It is lifted only by **Reinstate**, by **Propagate** for that agent, or by removing the skill everywhere. Exclusions are kept in the plugin's own storage, on this machine, per project (all its worktrees): they are not in the repository, your team does not see them.
 
 ### Symbolic links and safety
 
