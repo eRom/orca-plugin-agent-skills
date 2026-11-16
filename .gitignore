@@ -1,0 +1,8 @@
+.codegraph/
+_memory_/
+docs/superpowers/
+node_modules/
+.orca/
+.superpowers/
+.claude/notes/
+dist-spike/

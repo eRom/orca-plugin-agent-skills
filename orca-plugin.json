@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 2,
+  "id": "agent-skills",
+  "name": "Agent Skills",
+  "version": "0.1.0",
+  "description": "Manage the skills of the open project for every agent Orca runs: search skills.sh, add from a repo or a local folder, remove, see which agent reads which skill.",
+  "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
+  "repository": "https://github.com/eRom/orca-plugin-agent-skills",
+  "license": "MIT",
+  "engines": { "orca": ">=1.4.259" },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "dist/worker.mjs",
+  "capabilities": [{ "kind": "workspace:read" }, { "kind": "storage:own" }],
+  "contributes": {
+    "panels": [{ "id": "skills", "title": "Skills", "icon": "puzzle", "entry": "src/panel.tsx", "ui": "components" }],
+    "events": [{ "on": "workspace.changed" }]
+  }
+}

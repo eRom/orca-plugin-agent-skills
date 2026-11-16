@@ -1,0 +1,2 @@
+[install]
+minimumReleaseAgeExcludes = ["@types/bun", "typescript", "skills"]

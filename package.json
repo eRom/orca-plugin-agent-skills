@@ -1,0 +1,19 @@
+{
+  "name": "orca-plugin-agent-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/worker.ts --target=node --format=esm --outfile=dist/worker.mjs",
+    "typecheck": "bunx tsc -p .",
+    "test": "orca plugin test .",
+    "test:lib": "bun test integration",
+    "check:dist": "bun run build && git diff --exit-code -- dist"
+  },
+  "dependencies": {
+    "skills": "1.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2"
+  }
+}
