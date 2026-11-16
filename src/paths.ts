@@ -1,10 +1,8 @@
 // Chemins saisis par l'utilisateur : reconnaissance, résolution, abréviation du home, appartenance.
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
-/** Vrai si le texte est un chemin (`/x`, `~`, `~/x`, `./x`, `../x`) et non une source du type `owner/repo`. */
-export function isPathInput(text: string): boolean {
-  return text.startsWith('/') || text === '~' || text.startsWith('~/') || text.startsWith('./') || text.startsWith('../')
-}
+// Défini dans un module sans import (le panneau ne peut pas importer `node:path`), repris ici pour les autres appelants.
+export { isPathInput } from './path-input'
 
 /** Chemin absolu normalisé : `~` devient le home, un chemin relatif part de `root`, la barre finale disparaît. */
 export function resolveInputPath(text: string, root: string, home: string): string {
