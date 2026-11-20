@@ -5,29 +5,30 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import { EXCLUSIONS_KEY } from './exclusions'
-import type { InventoryDeps, OrcaSettings } from './inventory'
+import { HIDDEN_AGENTS_KEY } from './hidden-agents'
+import type { InventoryDeps } from './inventory'
 import type { OpFinished, OpRequest, PanelState } from './protocol'
 import { fakeSkillsLib, fakeTrasher, tempDir, writeSkill, type FakeSkillsLib, type FakeTrasher } from './test-fixtures'
 import { activateWith, deactivate, type WorkerDeps } from './worker-core'
 
 /** Commandes des agents de Romain : Claude, Codex, Grok, OpenCode, Pi, Antigravity, DeepSeek Harness. */
 const ROMAIN_COMMANDS = ['claude', 'codex', 'grok', 'opencode', 'pi', 'agy', 'dsh-tui', 'dsh']
-const SETTINGS: OrcaSettings = { disabled: [], overrides: {} }
-
 type Probe = { calls: number }
 
-function inventoryDeps(found: readonly string[] = ROMAIN_COMMANDS, settings: OrcaSettings | null = SETTINGS): { deps: InventoryDeps; probe: Probe } {
+function inventoryDeps(found: readonly string[] = ROMAIN_COMMANDS): { deps: InventoryDeps; probe: Probe } {
   const probe: Probe = { calls: 0 }
   const deps: InventoryDeps = {
-    readSettings: () => settings,
     findCommands: async () => {
       probe.calls++
       return new Set(found)
     },
-    now: Date.now
+    now: () => Date.now() + clockSkew
   }
   return { deps, probe }
 }
+
+/** Avance l'horloge de l'inventaire seulement (pas celle du harnais) : de quoi vieillir le cache. */
+let clockSkew = 0
 
 type Row = { id: string; kind: 'worktree'; name: string; projectId: string; path: string; branch: string; hostId: string }
 const rowOf = (path: string, over: Partial<Row> = {}): Row => ({
@@ -68,7 +69,6 @@ type Setup = {
 type SetupOptions = {
   storage?: NonNullable<Parameters<typeof mockHost>[0]>['storage']
   found?: readonly string[]
-  settings?: OrcaSettings | null
   deps?: Partial<WorkerDeps>
   rows?: (root: string) => Row[]
   /** Hôte déjà monté (pour un second `mountWorker` sur le même stockage). */
@@ -81,7 +81,7 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
   const home = tempDir('worker-home')
   const lib = fakeSkillsLib()
   const trash = fakeTrasher()
-  const { deps: inventory, probe } = inventoryDeps(options.found, options.settings)
+  const { deps: inventory, probe } = inventoryDeps(options.found)
   let rows = options.rows ? options.rows(root) : [rowOf(root)]
   let focused = 'identity:x'
   const controls: Controls = { failStorageSet: false, handlers: new Map() }
@@ -296,6 +296,70 @@ test('a gesture without a usable workspace is refused', async () => {
   await setup.worker.deactivate()
 })
 
+test('a hidden agent loses its chip and its folder in every project, and stays hidden after a restart', async () => {
+  const setup = await boot()
+  const before = await stateOf(setup.worker)
+  assert.ok(before.agents.some((agent) => agent.id === 'grok'))
+
+  const after = await setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true })
+  assert.ok(!after.agents.some((agent) => agent.id === 'grok'), 'grok is no longer an active agent')
+  assert.equal(after.detected.find((agent) => agent.id === 'grok')?.hidden, true)
+  assert.deepEqual(setup.host.data().storage[HIDDEN_AGENTS_KEY], ['grok'])
+
+  // Un ajout n'écrit plus pour Grok : son dossier propre n'est plus dans l'ensemble d'écriture.
+  const previewId = await previewAdd(setup, ['alpha'])
+  assert.equal((await setup.worker.request('op.start', ADD(previewId, ['alpha']))).ok, true)
+  assert.equal((await settled(setup.worker)).ok, true)
+  assert.deepEqual(setup.lib.calls.install[0]!.libAgents, ['universal', 'claude-code'])
+  await setup.worker.deactivate()
+
+  // Le réglage vit dans le stockage du plugin : un worker neuf le relit.
+  const again = await boot({ host: setup.host, root: setup.root })
+  assert.ok(!(await stateOf(again.worker)).agents.some((agent) => agent.id === 'grok'))
+  const shown = await again.worker.request('agents.setHidden', { agent: 'grok', hidden: false })
+  assert.ok(shown.agents.some((agent) => agent.id === 'grok'))
+  await again.worker.deactivate()
+})
+
+test('an unreadable storage fails the toggle instead of forgetting the hidden agents', async () => {
+  const setup = await boot({ storage: { [HIDDEN_AGENTS_KEY]: ['codex', 'pi'] } })
+  await stateOf(setup.worker)
+  setup.controls.afterStorageGet = async (key) => {
+    if (key === HIDDEN_AGENTS_KEY) throw new Error('storage unavailable')
+  }
+  await assert.rejects(setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true }))
+  assert.deepEqual(setup.host.data().storage[HIDDEN_AGENTS_KEY], ['codex', 'pi'])
+  setup.controls.afterStorageGet = undefined
+  await setup.worker.deactivate()
+})
+
+test('a toggle reuses the known inventory, however old, instead of probing the shell again', async () => {
+  const setup = await boot()
+  await stateOf(setup.worker)
+  const probes = setup.probe.calls
+  // Plus vieux que le délai de 10 s : `state.get` relancerait la sonde, la bascule non.
+  clockSkew = 60_000
+  try {
+    await setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true })
+    assert.equal(setup.probe.calls, probes)
+    // Témoin : une simple lecture, elle, relance bien la sonde sur un cache périmé.
+    await stateOf(setup.worker)
+    assert.equal(setup.probe.calls, probes + 1)
+  } finally {
+    clockSkew = 0
+  }
+  await setup.worker.deactivate()
+})
+
+test('refuses to hide the last visible agent', async () => {
+  const setup = await boot({ found: ['claude'] })
+  const state = await setup.worker.request('agents.setHidden', { agent: 'claude', hidden: true })
+  assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
+  assert.equal(state.inventory, 'detected')
+  assert.equal(setup.host.data().storage[HIDDEN_AGENTS_KEY], undefined)
+  await setup.worker.deactivate()
+})
+
 test('falls back to .agents and .claude when no agent is detected', async () => {
   const setup = await boot({ found: [] })
   const state = await stateOf(setup.worker)
@@ -307,14 +371,6 @@ test('falls back to .agents and .claude when no agent is detected', async () => 
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(setup.lib.calls.install[0]!.libAgents, ['universal', 'claude-code'])
-  await setup.worker.deactivate()
-})
-
-test('unreadable Orca settings fall back too', async () => {
-  const setup = await boot({ settings: null })
-  const state = await stateOf(setup.worker)
-  assert.equal(state.inventory, 'fallback')
-  assert.deepEqual(state.agents, [])
   await setup.worker.deactivate()
 })
 

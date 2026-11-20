@@ -6960,7 +6960,7 @@ var require_public_api = __commonJS(function(exports) {
 
 // src/worker.ts
 import { existsSync as existsSync3 } from "node:fs";
-import { homedir as homedir3, tmpdir as tmpdir2 } from "node:os";
+import { homedir as homedir2, tmpdir as tmpdir2 } from "node:os";
 
 // src/folder-picker.ts
 var OSASCRIPT_BIN = "/usr/bin/osascript";
@@ -6980,11 +6980,9 @@ function folderPicker(platform, run) {
 }
 
 // src/inventory.ts
-import { accessSync, constants, readFileSync } from "node:fs";
+import { accessSync, constants } from "node:fs";
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 // src/agents.ts
 function agent(id, label, commands, overrides = {}) {
@@ -7049,59 +7047,14 @@ function agentById(id) {
 }
 
 // src/shell-words.ts
-function splitWords(command) {
-  const words = [];
-  let i = 0;
-  while (i < command.length) {
-    while (i < command.length && /\s/.test(command[i]))
-      i++;
-    if (i >= command.length)
-      break;
-    const start = i;
-    let value = "";
-    while (i < command.length && !/\s/.test(command[i])) {
-      const char = command[i];
-      if (char === "'") {
-        const close = command.indexOf("'", i + 1);
-        const stop = close === -1 ? command.length : close;
-        value += command.slice(i + 1, stop);
-        i = stop + 1;
-      } else if (char === '"') {
-        i++;
-        while (i < command.length && command[i] !== '"') {
-          if (command[i] === "\\" && i + 1 < command.length)
-            i++;
-          value += command[i];
-          i++;
-        }
-        i++;
-      } else if (char === "\\" && i + 1 < command.length) {
-        value += command[i + 1];
-        i += 2;
-      } else {
-        value += char;
-        i++;
-      }
-    }
-    words.push({ value, start, end: Math.min(i, command.length) });
-  }
-  return words;
-}
 function shellQuote(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 // src/inventory.ts
-var ORCA_USER_DATA = join(homedir(), "Library/Application Support/orca");
 var PROBE_MARKER = "__AGENT_PROFILES__";
 var SHELL_TIMEOUT_MS = 15000;
-function overrideToken(override) {
-  const first = splitWords(override ?? "")[0]?.value;
-  if (!first)
-    return null;
-  return first.startsWith("~/") ? join(homedir(), first.slice(2)) : first;
-}
-function probeTokens(settings) {
+function probeTokens() {
   const tokens = new Set;
   for (const agent2 of AGENTS) {
     for (const command of agent2.commands)
@@ -7109,58 +7062,14 @@ function probeTokens(settings) {
     for (const command of agent2.requiredCommands)
       tokens.add(command);
   }
-  for (const override of Object.values(settings?.overrides ?? {})) {
-    const token = overrideToken(override);
-    if (token)
-      tokens.add(token);
-  }
   return [...tokens];
 }
-function enabledAgents(found, settings) {
-  const disabled = new Set(settings?.disabled ?? []);
-  return AGENTS.filter((agent2) => {
-    if (disabled.has(agent2.id))
-      return false;
-    const token = overrideToken(settings?.overrides[agent2.id]);
-    const installed = agent2.commands.some((command) => found.has(command)) || token !== null && found.has(token);
-    return installed && agent2.requiredCommands.every((command) => found.has(command));
-  }).map((agent2) => agent2.id);
+function installedAgents(found) {
+  return AGENTS.filter((agent2) => agent2.commands.some((command) => found.has(command)) && agent2.requiredCommands.every((command) => found.has(command))).map((agent2) => agent2.id);
 }
 async function detectAgents(deps, onFallback) {
-  const settings = deps.readSettings();
-  const found = await deps.findCommands(probeTokens(settings), onFallback);
-  return { inventory: { agents: enabledAgents(found, settings), settingsReadable: settings !== null, detectedAt: deps.now() }, found };
-}
-function isStringArray(value) {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-function asStringRecord(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return {};
-  const entries = Object.entries(value);
-  return entries.every(([, item]) => typeof item === "string") ? Object.fromEntries(entries) : {};
-}
-function readOrcaSettings(userDataDir = ORCA_USER_DATA) {
-  let db = null;
-  try {
-    const index = JSON.parse(readFileSync(join(userDataDir, "orca-profile-index.json"), "utf8"));
-    if (typeof index.activeProfileId !== "string" || index.activeProfileId === "")
-      return null;
-    db = new DatabaseSync(join(userDataDir, "profiles", index.activeProfileId, "profile-state.db"), { readOnly: true });
-    const row = db.prepare("select payload from profile_state_documents where domain='settings'").get();
-    if (!row)
-      return null;
-    const payload = JSON.parse(String(row.payload));
-    if (!isStringArray(payload.disabledTuiAgents))
-      return null;
-    return { disabled: payload.disabledTuiAgents, overrides: asStringRecord(payload.agentCmdOverrides) };
-  } catch {
-    return null;
-  } finally {
-    try {
-      db?.close();
-    } catch {}
-  }
+  const found = await deps.findCommands(probeTokens(), onFallback);
+  return { inventory: { agents: installedAgents(found), detectedAt: deps.now() }, found };
 }
 function parseShellProbe(stdout) {
   const first = stdout.indexOf(PROBE_MARKER);
@@ -7244,7 +7153,6 @@ async function findCommands(tokens, runShell = runLoginShell, pathEnv = process.
   return found;
 }
 var REAL_INVENTORY_DEPS = {
-  readSettings: () => readOrcaSettings(),
   findCommands: (tokens, onFallback) => findCommands(tokens, undefined, undefined, onFallback),
   now: Date.now
 };
@@ -11606,7 +11514,7 @@ var require_dist3 = /* @__PURE__ */ __commonJSMin((exports, module) => {
 });
 
 // node_modules/skills/dist/_chunks/remove.mjs
-import { existsSync, readFileSync as readFileSync2, readdirSync, realpathSync } from "fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "fs";
 import { basename, dirname, extname as extname$1, isAbsolute, join as join2, normalize as normalize2, posix, relative, resolve, sep } from "path";
 
 // node_modules/yaml/dist/index.js
@@ -11658,7 +11566,7 @@ var $visitAsync = visit.visitAsync;
 // node_modules/skills/dist/_chunks/remove.mjs
 import { createWriteStream } from "node:fs";
 import { dirname as dirname$1, join as join$1, normalize as normalize$1, relative as relative$1, resolve as resolve$1, sep as sep$1 } from "node:path";
-import { homedir as homedir2, platform, tmpdir } from "os";
+import { homedir, platform, tmpdir } from "os";
 
 // node_modules/nostics/dist/index.mjs
 function toValueWithArgs(valFn, ...args) {
@@ -16000,7 +15908,7 @@ var S_BULLET = pc.green("•");
 var S_BAR2 = pc.dim("│");
 var S_BAR_H2 = pc.dim("─");
 var cancelSymbol = Symbol("cancel");
-var home = homedir2();
+var home = homedir();
 var configHome = xdgConfig ?? join2(home, ".config");
 var codexHome = process.env.CODEX_HOME?.trim() || join2(home, ".codex");
 var claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join2(home, ".claude");
@@ -16014,7 +15922,7 @@ var zedAppDataHome = process.env.APPDATA?.trim();
 var zedFlatpakConfigHome = process.env.FLATPAK_XDG_CONFIG_HOME?.trim();
 function packageJsonHasDependency(packageJsonPath, dependencyName) {
   try {
-    const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf-8"));
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
     return !!(packageJson.dependencies?.[dependencyName] || packageJson.devDependencies?.[dependencyName]);
   } catch {
     return false;
@@ -17423,7 +17331,7 @@ async function isDirEntryOrSymlinkToDir(entry, entryPath) {
   }
 }
 function getCanonicalSkillsDir(global, cwd) {
-  const baseDir = global ? homedir2() : cwd || process.cwd();
+  const baseDir = global ? homedir() : cwd || process.cwd();
   return join2(baseDir, AGENTS_DIR$1, SKILLS_SUBDIR);
 }
 function getEveSubagentSkillsDir(subagent, cwd) {
@@ -17436,7 +17344,7 @@ function getAgentBaseDir(agentType, global, cwd, eveSubagent) {
   if (agentType === "eve" && eveSubagent)
     return getEveSubagentSkillsDir(eveSubagent, cwd);
   const agent2 = agents[agentType];
-  const baseDir = global ? homedir2() : cwd || process.cwd();
+  const baseDir = global ? homedir() : cwd || process.cwd();
   if (global) {
     if (agent2.globalSkillsDir === undefined)
       return join2(baseDir, agent2.skillsDir);
@@ -18056,7 +17964,7 @@ async function listInstalledSkills(options = {}) {
           continue;
         }
         const sanitizedSkillName = sanitizeName(skill.name);
-        const installedAgents = [];
+        const installedAgents2 = [];
         for (const agentType of agentsToCheck) {
           const agent2 = agents[agentType];
           if (scope.global && agent2.globalSkillsDir === undefined)
@@ -18099,11 +18007,11 @@ async function listInstalledSkills(options = {}) {
               }
             } catch {}
           if (found)
-            installedAgents.push(agentType);
+            installedAgents2.push(agentType);
         }
         if (skillsMap.has(skillKey)) {
           const existing = skillsMap.get(skillKey);
-          for (const agent2 of installedAgents)
+          for (const agent2 of installedAgents2)
             if (!existing.agents.includes(agent2))
               existing.agents.push(agent2);
         } else
@@ -18113,7 +18021,7 @@ async function listInstalledSkills(options = {}) {
             path: skillDir,
             canonicalPath: skillDir,
             scope: scopeKey,
-            agents: installedAgents
+            agents: installedAgents2
           });
       }
     } catch {}
@@ -19257,7 +19165,7 @@ function getSkillLockPath() {
   const xdgStateHome = process.env.XDG_STATE_HOME;
   if (xdgStateHome)
     return join2(xdgStateHome, "skills", LOCK_FILE);
-  return join2(homedir2(), AGENTS_DIR, LOCK_FILE);
+  return join2(homedir(), AGENTS_DIR, LOCK_FILE);
 }
 async function readSkillLock() {
   const lockPath = getSkillLockPath();
@@ -21444,6 +21352,23 @@ function include(ex, projectKey, folder, agents2) {
   return withAgents(ex, projectKey, folder, left);
 }
 
+// src/hidden-agents.ts
+var HIDDEN_AGENTS_KEY = "hiddenAgents";
+function parseHiddenAgents(raw) {
+  if (!Array.isArray(raw) || !raw.every((item) => typeof item === "string"))
+    return [];
+  return [...new Set(raw)];
+}
+function setHidden(hidden, installed, agent2, hide) {
+  const has = hidden.includes(agent2);
+  if (!hide)
+    return has ? hidden.filter((id) => id !== agent2) : hidden;
+  if (has || !installed.includes(agent2))
+    return hidden;
+  const visible = installed.filter((id) => id !== agent2 && !hidden.includes(id));
+  return visible.length === 0 ? hidden : [...hidden, agent2];
+}
+
 // src/operations.ts
 import { lstat as lstat5, mkdir as mkdir3, realpath as realpath4 } from "node:fs/promises";
 import { basename as basename3, join as join7 } from "node:path";
@@ -22189,8 +22114,6 @@ async function activateWith(orca, deps) {
   let stateTicket = 0;
   function probe() {
     const run = detectAgents(deps.inventory, () => orca.log("shell probe failed, PATH fallback")).then(({ inventory: next }) => {
-      if (!next.settingsReadable)
-        orca.log("settings unreadable");
       inventory = next;
       return next;
     }).finally(() => {
@@ -22200,24 +22123,26 @@ async function activateWith(orca, deps) {
     probing = run;
     return run;
   }
-  function listInventory(force) {
+  function listInventory(force, anyAge = false) {
     if (!force && probing)
       return probing;
-    if (!force && inventory && deps.inventory.now() - inventory.detectedAt < INVENTORY_TTL_MS)
+    if (!force && inventory && (anyAge || deps.inventory.now() - inventory.detectedAt < INVENTORY_TTL_MS))
       return Promise.resolve(inventory);
     return probe();
   }
-  async function agentsOf(force = false) {
+  async function agentsOf(force = false, anyAge = false) {
     let found = null;
     try {
-      found = await listInventory(force);
+      found = await listInventory(force, anyAge);
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`);
     }
-    const active = found?.settingsReadable ? skillCapable(found.agents) : [];
+    const installed = found ? skillCapable(found.agents) : [];
+    const hidden = await readHidden();
+    const active = installed.filter((id) => !hidden.includes(id));
     if (active.length === 0)
-      return { active: [], fallback: true, writeDirs: FALLBACK_DIRS };
-    return { active, fallback: false, writeDirs: writeSet(active) };
+      return { installed, hidden, active: [], fallback: true, writeDirs: FALLBACK_DIRS };
+    return { installed, hidden, active, fallback: false, writeDirs: writeSet(active) };
   }
   listInventory(false).catch((error) => orca.log(`inventory failed: ${messageOf(error)}`));
   function serialize(task) {
@@ -22229,6 +22154,14 @@ async function activateWith(orca, deps) {
   }
   const readExclusions = async () => parseExclusions(await orca.storage.get(EXCLUSIONS_KEY));
   const writeExclusions = (next) => orca.storage.set(EXCLUSIONS_KEY, next);
+  async function readHidden() {
+    try {
+      return parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY));
+    } catch (error) {
+      orca.log(`hidden agents unreadable: ${messageOf(error)}`);
+      return [];
+    }
+  }
   function updateExclusions(change) {
     return serialize(async () => {
       const current2 = await readExclusions();
@@ -22249,12 +22182,13 @@ async function activateWith(orca, deps) {
     const spec = agentById(id);
     return spec ? [{ id, label: spec.label, icon: spec.icon, trust: TRUST_GATED[id] ?? null }] : [];
   });
-  async function currentState(force = false) {
+  async function currentState(force = false, anyAge = false) {
     const focused = await focusedWorkspace();
-    const agents2 = await agentsOf(force);
+    const agents2 = await agentsOf(force, anyAge);
     const base = {
       workspace: focused.view,
       agents: agentViews(agents2.active),
+      detected: agentViews(agents2.installed).map((view) => ({ ...view, hidden: agents2.hidden.includes(view.id) })),
       inventory: agents2.fallback ? "fallback" : "detected",
       capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null }
     };
@@ -22276,6 +22210,16 @@ async function activateWith(orca, deps) {
   const postStateSafely = () => postState().catch((error) => orca.log(`state failed: ${messageOf(error)}`));
   orca.panels.handle("state.get", () => currentState());
   orca.panels.handle("state.refresh", () => currentState(true));
+  orca.panels.handle("agents.setHidden", async ({ agent: agent2, hidden }) => {
+    await serialize(async () => {
+      const current2 = parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY));
+      const { installed } = await agentsOf(false, true);
+      const next = setHidden(current2, installed, agent2, hidden);
+      if (next !== current2)
+        await orca.storage.set(HIDDEN_AGENTS_KEY, [...next]);
+    });
+    return currentState(false, true);
+  });
   orca.events.on("workspace.changed", () => postStateSafely());
   function releasePreview() {
     if (!preview)
@@ -22608,7 +22552,7 @@ function activate(orca) {
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
     searchBase: SKILLS_SH,
-    home: homedir3(),
+    home: homedir2(),
     tmpdir: tmpdir2()
   });
 }

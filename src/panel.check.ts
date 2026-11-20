@@ -68,6 +68,7 @@ function stateOf(overrides: Partial<PanelState>): PanelState {
   return {
     workspace: { status: 'ready', id: 'identity:idema', name: 'erom-tool-idema', branch: 'feat/skills', linkedWorktree: true },
     agents: AGENTS,
+    detected: AGENTS.map((agent) => ({ ...agent, hidden: false })),
     inventory: 'detected',
     rows: READY_ROWS,
     unsafeDirs: [],
