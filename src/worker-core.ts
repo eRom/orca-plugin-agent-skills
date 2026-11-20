@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { JsonValue, OrcaWorkerApi } from 'orca/worker'
 import { agentById } from './agents'
 import { EXCLUSIONS_KEY, exclude, excludedOf, include, parseExclusions, type Exclusions } from './exclusions'
+import { HIDDEN_AGENTS_KEY, parseHiddenAgents, setHidden } from './hidden-agents'
 import { detectAgents, type Inventory, type InventoryDeps } from './inventory'
 import { addSkills, keepVersion, propagate, removeFromDir, removeSkill, type OpContext, type OpError, type OpResult } from './operations'
 import { abbreviateHome, isInside, resolveInputPath } from './paths'
@@ -42,7 +43,8 @@ const PREVIEW_TTL_MS = 10 * 60_000
 type Stage = Awaited<ReturnType<SkillsLib['stage']>>
 /** `workspaceId` et `root` : l'espace pour lequel la source a été lue ; un ajout n'écrit jamais ailleurs. */
 type Preview = { id: string; source: ResolvedSource; workspaceId: string; root: string; timer: ReturnType<typeof setTimeout> | null }
-type Agents = { active: string[]; fallback: boolean; writeDirs: readonly ManagedDir[] }
+/** `installed` : agents détectés qui gèrent les skills ; `hidden` : ceux que l'utilisateur a masqués ; `active` : les autres. */
+type Agents = { installed: string[]; hidden: readonly string[]; active: string[]; fallback: boolean; writeDirs: readonly ManagedDir[] }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const codeOf = (error: unknown): string => toLibDiagnostic(error).code
@@ -118,7 +120,6 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
   function probe(): Promise<Inventory> {
     const run: Promise<Inventory> = detectAgents(deps.inventory, () => orca.log('shell probe failed, PATH fallback'))
       .then(({ inventory: next }) => {
-        if (!next.settingsReadable) orca.log('settings unreadable')
         inventory = next
         return next
       })
@@ -136,7 +137,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     return probe()
   }
 
-  /** Agents actifs. Inventaire vide, sans agent qui gère les skills, ou réglages illisibles : repli sur `.agents` et `.claude`. */
+  /** Agents actifs : installés et non masqués. Inventaire vide ou sans agent qui gère les skills : repli sur `.agents` et `.claude`. */
   async function agentsOf(force = false): Promise<Agents> {
     let found: Inventory | null = null
     try {
@@ -144,9 +145,11 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`)
     }
-    const active = found?.settingsReadable ? skillCapable(found.agents) : []
-    if (active.length === 0) return { active: [], fallback: true, writeDirs: FALLBACK_DIRS }
-    return { active, fallback: false, writeDirs: writeSet(active) }
+    const installed = found ? skillCapable(found.agents) : []
+    const hidden = await readHidden()
+    const active = installed.filter((id) => !hidden.includes(id))
+    if (active.length === 0) return { installed, hidden, active: [], fallback: true, writeDirs: FALLBACK_DIRS }
+    return { installed, hidden, active, fallback: false, writeDirs: writeSet(active) }
   }
 
   // Au démarrage, sans bloquer l'activation : le premier état attend déjà la sonde en cours.
@@ -163,6 +166,15 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
 
   const readExclusions = async (): Promise<Exclusions> => parseExclusions(await orca.storage.get(EXCLUSIONS_KEY))
   const writeExclusions = (next: Exclusions): Promise<void> => orca.storage.set(EXCLUSIONS_KEY, next as unknown as JsonValue)
+  /** Un stockage illisible ne doit pas casser l'état : aucun agent masqué, et le journal le dit. */
+  async function readHidden(): Promise<readonly string[]> {
+    try {
+      return parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY))
+    } catch (error) {
+      orca.log(`hidden agents unreadable: ${messageOf(error)}`)
+      return []
+    }
+  }
 
   function updateExclusions(change: (current: Exclusions) => Exclusions): Promise<void> {
     return serialize(async () => {
@@ -196,6 +208,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     const base = {
       workspace: focused.view,
       agents: agentViews(agents.active),
+      detected: agentViews(agents.installed).map((view) => ({ ...view, hidden: agents.hidden.includes(view.id) })),
       inventory: agents.fallback ? ('fallback' as const) : ('detected' as const),
       capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null }
     }
@@ -221,6 +234,16 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
 
   orca.panels.handle('state.get', () => currentState())
   orca.panels.handle('state.refresh', () => currentState(true))
+  // Masquer ou montrer un agent : passe par la file des écritures, puis rend l'état recalculé (lu dans le cache d'inventaire).
+  orca.panels.handle('agents.setHidden', async ({ agent, hidden }) => {
+    await serialize(async () => {
+      const current = await readHidden()
+      const { installed } = await agentsOf()
+      const next = setHidden(current, installed, agent, hidden)
+      if (next !== current) await orca.storage.set(HIDDEN_AGENTS_KEY, [...next])
+    })
+    return currentState()
+  })
   orca.events.on('workspace.changed', () => postStateSafely())
 
   // --- Aperçu d'une source ---

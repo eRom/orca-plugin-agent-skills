@@ -1,12 +1,14 @@
 // Panneau Skills : les skills du projet ouvert et ce que chaque agent d'Orca en voit.
 // Aucun CSS ni DOM : Orca dessine les composants. Le worker lit le disque et écrit ; ici, on montre et on demande.
-import { Button, Callout, EmptyState, IconButton, read, Row, Skeleton, Stack, Text, Box } from 'orca'
+import { Button, Callout, EmptyState, env, IconButton, Image, read, Row, Separator, Skeleton, Stack, Switch, Text, Box } from 'orca'
+import { dimIcon, themedIcon } from './icons'
 import { currentLocale, copy } from './panel-copy'
-import { renderProgress, renderNote, renderRow, type RowContext } from './panel-row'
+import { CHIP_SLOT_WIDTH, renderProgress, renderNote, renderRow, type RowContext } from './panel-row'
 import { renderAddFlow, renderPathLine, renderReplaceConfirm, renderResults, renderSearchField } from './panel-search'
 import {
   addFlow,
   addNote,
+  agentsOpen,
   confirmation,
   loadError,
   loadState,
@@ -18,7 +20,10 @@ import {
   query,
   refreshing,
   refreshState,
-  searchView
+  savingAgent,
+  searchView,
+  setAgentHidden,
+  toggleAgents
 } from './panel-state'
 import { isPathInput } from './path-input'
 import type { PanelState } from './protocol'
@@ -36,10 +41,59 @@ function renderHeader(state: PanelState | null) {
           {title}
         </Text>
       </Box>
+      {state === null ? null : (
+        <Box key="header-agents" shrink={false}>
+          <IconButton
+            icon="agent"
+            label={read(agentsOpen) ? m.agentsCloseLabel : m.agentsOpenLabel}
+            variant="ghost"
+            tone={read(agentsOpen) ? 'accent' : 'neutral'}
+            size="sm"
+            onPress={toggleAgents}
+          />
+        </Box>
+      )}
       <Box key="header-refresh" shrink={false}>
         <IconButton icon="refresh" label={m.refreshLabel} variant="ghost" size="sm" disabled={read(refreshing)} onPress={refreshState} />
       </Box>
     </Row>
+  )
+}
+
+/** Section « Agents » : chaque agent installé, avec un interrupteur pour le masquer dans tous les projets. */
+function renderAgents(state: PanelState) {
+  const m = copy()
+  const scheme = env.theme.colorScheme
+  const saving = read(savingAgent)
+  const visible = state.detected.filter((agent) => !agent.hidden).length
+  return (
+    <Stack gap="sm">
+      <Stack gap="xs">
+        <Text muted size="xs" weight="semibold">
+          {`${m.agentsTitle} · ${visible}/${state.detected.length}`}
+        </Text>
+        <Text muted size="xs">
+          {state.detected.length === 0 ? m.agentsNone : m.agentsHint}
+        </Text>
+      </Stack>
+      {state.detected.map((agent) => (
+        <Row key={`agent-${agent.id}`} gap="sm" align="center">
+          <Box key={`agent-icon-${agent.id}`} width={CHIP_SLOT_WIDTH} shrink={false} align="center" justify="center">
+            <Image src={agent.hidden ? dimIcon(themedIcon(agent.icon, scheme)) : themedIcon(agent.icon, scheme)} alt="" size="xs" />
+          </Box>
+          <Box key={`agent-switch-${agent.id}`} grow minWidth={0}>
+            <Switch
+              label={agent.label}
+              checked={!agent.hidden}
+              // Le dernier agent visible reste visible : sans agent, aucun dossier où écrire.
+              disabled={saving !== null || (!agent.hidden && visible === 1)}
+              onChange={(checked) => void setAgentHidden(agent.id, !checked)}
+            />
+          </Box>
+        </Row>
+      ))}
+      <Separator />
+    </Stack>
   )
 }
 
@@ -152,6 +206,7 @@ export default function Panel() {
   return (
     <Stack gap="md">
       {renderHeader(state)}
+      {read(agentsOpen) ? renderAgents(state) : null}
       {staleReason === null ? null : (
         <Callout tone="danger" title={m.loadFailed}>
           {staleReason}

@@ -12,7 +12,10 @@ export type AgentView = { id: string; label: string; icon: string; trust: 'herme
 /** Tout ce que le panneau affiche. `busy` : le geste en cours, `null` au repos (et après un redémarrage du worker). */
 export type PanelState = {
   workspace: WorkspaceView
+  /** Agents actifs : installés et non masqués. */
   agents: AgentView[]
+  /** Tous les agents installés qui gèrent les skills, masqués compris : la liste du réglage « Agents ». */
+  detected: (AgentView & { hidden: boolean })[]
   inventory: 'detected' | 'fallback'
   rows: SkillRow[]
   unsafeDirs: ManagedDir[]
@@ -54,6 +57,8 @@ declare module 'orca' {
     /** Répond tout de suite (sauf pour `add`, dont l'essai et le contrôle de collision précèdent la réponse) ; `op.finished` suit. */
     'op.start': { input: { op: OpRequest; workspaceId: string }; output: StartAnswer }
     'folder.pick': { output: { path: string | null } }
+    /** Masque ou montre un agent pour tous les projets ; refuse en silence de masquer le dernier visible. Rend l'état. */
+    'agents.setHidden': { input: { agent: string; hidden: boolean }; output: PanelState }
     /** Vrai si le texte tapé désigne un dossier (relatif à l'espace, ou `~`) : un `stat`, la source n'est pas lue. `error` : l'espace a changé. */
     'path.check': { input: { text: string; workspaceId: string }; output: { exists: boolean; error?: OpError } }
   }

@@ -8,7 +8,7 @@
 
 ![The Skills panel: each skill of the project with the agents that read it, a warning for the agents it is missing for, beside a skills.sh search](media/cover.png)
 
-Every coding agent reads project skills from its own folder: `.claude/skills` for Claude, `.agents/skills` for Codex, Pi, Antigravity and DeepSeek Harness, `.grok/skills` for Grok, and so on. Adding a skill by hand means copying it into the right folders, and nothing tells you which agent is blind to it. Agent Skills adds a **Skills** panel that follows the focused workspace, lists the skills of the project and shows, per skill, which of the agents you enabled in Orca can see it.
+Every coding agent reads project skills from its own folder: `.claude/skills` for Claude, `.agents/skills` for Codex, Pi, Antigravity and DeepSeek Harness, `.grok/skills` for Grok, and so on. Adding a skill by hand means copying it into the right folders, and nothing tells you which agent is blind to it. Agent Skills adds a **Skills** panel that follows the focused workspace, lists the skills of the project and shows, per skill, which of the agents installed on your computer can see it.
 
 ## Install
 
@@ -21,8 +21,9 @@ Orca shows the access the plugin asks for (see [What it can access](#what-it-can
 ## Features
 
 - **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`) and it offers to add from that folder. The folder button opens the macOS picker.
-- **One icon per enabled agent on each skill**: full when the agent sees the skill, faded when it does not. An agent you removed the skill for on purpose has no icon: the row says "Excluded for X". The icons only display, every gesture is a button in the row.
-- **Propagate**: when an enabled agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
+- **One icon per active agent on each skill**: full when the agent sees the skill, faded when it does not. An agent you removed the skill for on purpose has no icon: the row says "Excluded for X". The icons only display, every gesture is a button in the row.
+- **Choose your agents**: the plugin detects the agents installed on your computer. The agent button in the panel header lists them, each with a switch: a hidden agent gets no icon and no skills folder, in every project. The last visible agent cannot be hidden.
+- **Propagate**: when an active agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
 - **Add** from a skills.sh result or a local folder (a pasted path, or the folder button). A typed `owner/repo` is a search, not an add: pick the result you want. A source holding several skills opens a checklist, everything ticked by default.
 - **Remove** a skill for every agent, or **remove here** from one folder (an expanded row lists the folders that carry a copy and the agents each one feeds). The confirmation names the agents that lose the skill and those that still see it through another folder. An agent that lost a skill this way is remembered as excluded for that skill (see [Exclusions](#exclusions)).
 - **Diverging copies** (the same skill, different content in two folders): the row says so, shows one version per distinct content, and **Keep this one** copies it over the others. Nothing is written before you choose.
@@ -37,13 +38,13 @@ The plugin only reads, lists, writes and removes in ten **managed folders** of t
 
 `.agents/skills`, `.claude/skills`, `.grok/skills`, `.kiro/skills`, `.qoder/skills`, `.codebuddy/skills`, `.zcode/skills`, `.trae/skills`, `.openclaude/skills`, `.prime/agent/skills`.
 
-An addition writes into the **fewest folders** that cover your enabled agents, not into every folder skills.sh could attribute. With Claude, Codex, Grok, OpenCode, Pi, Antigravity and DeepSeek Harness enabled, that is `.claude/skills`, `.agents/skills` and `.grok/skills`.
+An addition writes into the **fewest folders** that cover your active agents, not into every folder skills.sh could attribute. With Claude, Codex, Grok, OpenCode, Pi, Antigravity and DeepSeek Harness active, that is `.claude/skills`, `.agents/skills` and `.grok/skills`.
 
 - **Only verified reads count.** The table of which agent reads which folder (`docs/agent-skill-dirs.md`) comes from primary sources (official docs, the agents' own repositories). A read that could not be verified is treated as absent: one copy too many beats a blind agent.
 - **The root `skills/` folder is never touched.** Some agents read it, but it is also where a repository publishes its own skill sources, and listing it would offer to remove the repository's content.
 - **Folders that agents read but the plugin does not manage** (`.cursor/skills`, `.codex/skills`, `.github/skills`, `.gemini/skills`, `.opencode/skills`...) are ignored: a skill that exists only there is not listed.
 - **Aider** reads no skills and never appears.
-- **Orca's agents not detected** (settings database missing, shell probe failed): the plugin writes into `.agents/skills` and `.claude/skills`, which cover 35 of Orca's 45 agents, shows no agent icons, and says so in one line.
+- **No agent detected** (none of Orca's agents found on your computer): the plugin writes into `.agents/skills` and `.claude/skills`, which cover 35 of Orca's 45 agents, shows no agent icons, and says so in one line.
 - A `skills-lock.json` is written at the root of the project by additions, as the `skills` CLI does. Propagate and the copies into folders the library does not know (`.openclaude`, `.prime`) leave it alone.
 
 ### Exclusions
@@ -65,11 +66,11 @@ Orca labels this plugin **Full access**: it runs its own worker process on your 
 | Capability | Why |
 | --- | --- |
 | `workspace:read` | Know the focused workspace (path, branch, project, host) to list and manage its skills. |
-| `storage:own` | Keep the per-skill agent exclusions in the plugin's own storage. |
+| `storage:own` | Keep the per-skill agent exclusions and the hidden agents in the plugin's own storage. |
 
 Beyond Orca's API, the worker:
 
-- **reads** Orca's settings database (`~/Library/Application Support/orca/profiles/<id>/profile-state.db`) to know which agents you disabled. It never writes to it.
+- **never reads** Orca's own files: the agents come from the probe below, the choices from the plugin's storage.
 - **runs** a single `zsh -ilc` that looks up each known agent's executable with your real `PATH`, `/usr/bin/osascript` for the folder picker, and `/usr/bin/trash` for the Trash.
 - **writes** only in the project's managed folders listed above and in `skills-lock.json` at its root.
 - **makes network requests** to skills.sh for the search (`GET https://skills.sh/api/search`), and, through the [`skills`](https://github.com/vercel-labs/skills) library, to the git host of a repository you add from.
@@ -83,7 +84,7 @@ The plugin embeds the `skills` library, the engine of the `skills` CLI. By defau
 - **macOS only.** The folder picker, the Trash and the agent probe use macOS commands. On another system the plugin loads but refuses destructive gestures and hides the folder button.
 - **Orca 1.4.259 or later**, and `zsh` as the login shell for agent detection.
 - **Remote workspaces** (SSH, runtime hosts) are not supported: the panel says so and offers no gesture. The home folder is refused as a project.
-- **No plugin API lists Orca's enabled agents**, so the plugin reads Orca's internal settings format. Toggling an agent in Settings > Agents is not picked up live: press ⟳ in the panel.
+- **No plugin API lists Orca's enabled agents**, so the plugin shows every agent installed on your computer, including those you turned off in Orca's Settings > Agents: hide them with the agent button. An agent installed while the panel is open shows up on ⟳.
 - **The panel does not watch the disk.** It re-reads on open, on workspace change, after each gesture, and on ⟳.
 - **Two agents read project skills only after you approve the folder** (Hermes: `hermes skills trust`; Mistral Vibe: trusted folder). The row says so in its expanded view.
 - **No update command yet.** The lock keeps what is needed (source, type, hash); updating from the lock is planned for 1.x.

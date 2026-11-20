@@ -1,59 +1,40 @@
-// Inventaire des agents que l'utilisateur a activés dans Orca : réglages lus (en lecture seule) dans la
-// base SQLite d'Orca, commandes cherchées par un shell de login. Reproduit la règle de détection d'Orca
-// (src/main/preflight/installed-agent-detection.ts) : agent non désactivé, installé, dépendances présentes.
-import { accessSync, constants, readFileSync } from 'node:fs'
+// Inventaire des agents installés : commandes cherchées par un shell de login, rien d'autre. Les fichiers
+// privés d'Orca ne sont jamais lus (demande de la revue de l'annuaire, issue #1) : un agent installé mais
+// désactivé dans Orca est donc retenu. Reprend la règle d'installation d'Orca
+// (src/main/preflight/installed-agent-detection.ts) : une commande de l'agent trouvée, dépendances présentes.
+import { accessSync, constants } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { AGENTS } from './agents'
-import { shellQuote, splitWords } from './shell-words'
+import { shellQuote } from './shell-words'
 
-export type OrcaSettings = { disabled: readonly string[]; overrides: Readonly<Record<string, string>> }
-export type Inventory = { agents: string[]; settingsReadable: boolean; detectedAt: number }
+export type Inventory = { agents: string[]; detectedAt: number }
 export type ShellRunner = (script: string) => Promise<{ ok: boolean; stdout: string }>
 export type InventoryDeps = {
-  readSettings: () => OrcaSettings | null
   /** `onFallback` est appelé quand le shell de login a échoué et que la recherche est retombée sur le PATH. */
   findCommands: (tokens: readonly string[], onFallback?: () => void) => Promise<ReadonlySet<string>>
   now: () => number
 }
 
-export const ORCA_USER_DATA = join(homedir(), 'Library/Application Support/orca')
-
 const PROBE_MARKER = '__AGENT_PROFILES__'
 const SHELL_TIMEOUT_MS = 15_000
 
-/** Premier mot d'un override de commande (`~/` développé), ou `null` pour une valeur vide. */
-export function overrideToken(override: string | undefined): string | null {
-  const first = splitWords(override ?? '')[0]?.value
-  if (!first) return null
-  return first.startsWith('~/') ? join(homedir(), first.slice(2)) : first
-}
-
-/** Tous les jetons à chercher : commandes et dépendances de la table, plus les overrides, sans doublon. */
-export function probeTokens(settings: OrcaSettings | null): string[] {
+/** Tous les jetons à chercher : commandes et dépendances de la table, sans doublon. */
+export function probeTokens(): string[] {
   const tokens = new Set<string>()
   for (const agent of AGENTS) {
     for (const command of agent.commands) tokens.add(command)
     for (const command of agent.requiredCommands) tokens.add(command)
   }
-  for (const override of Object.values(settings?.overrides ?? {})) {
-    const token = overrideToken(override)
-    if (token) tokens.add(token)
-  }
   return [...tokens]
 }
 
-/** Agents retenus, dans l'ordre du catalogue d'Orca. Les `requiredCommands` s'appliquent toujours. */
-export function enabledAgents(found: ReadonlySet<string>, settings: OrcaSettings | null): string[] {
-  const disabled = new Set(settings?.disabled ?? [])
-  return AGENTS.filter((agent) => {
-    if (disabled.has(agent.id)) return false
-    const token = overrideToken(settings?.overrides[agent.id])
-    const installed = agent.commands.some((command) => found.has(command)) || (token !== null && found.has(token))
-    return installed && agent.requiredCommands.every((command) => found.has(command))
-  }).map((agent) => agent.id)
+/** Agents installés, dans l'ordre du catalogue d'Orca. Les `requiredCommands` s'appliquent toujours. */
+export function installedAgents(found: ReadonlySet<string>): string[] {
+  return AGENTS.filter(
+    (agent) =>
+      agent.commands.some((command) => found.has(command)) && agent.requiredCommands.every((command) => found.has(command))
+  ).map((agent) => agent.id)
 }
 
 /** Une détection complète : l'inventaire, et les commandes trouvées pour le recalculer plus tard sans shell. */
@@ -61,46 +42,12 @@ export async function detectAgents(
   deps: InventoryDeps,
   onFallback?: () => void
 ): Promise<{ inventory: Inventory; found: ReadonlySet<string> }> {
-  const settings = deps.readSettings()
-  const found = await deps.findCommands(probeTokens(settings), onFallback)
-  return { inventory: { agents: enabledAgents(found, settings), settingsReadable: settings !== null, detectedAt: deps.now() }, found }
+  const found = await deps.findCommands(probeTokens(), onFallback)
+  return { inventory: { agents: installedAgents(found), detectedAt: deps.now() }, found }
 }
 
-export async function listEnabledAgents(deps: InventoryDeps): Promise<Inventory> {
+export async function listInstalledAgents(deps: InventoryDeps): Promise<Inventory> {
   return (await detectAgents(deps)).inventory
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
-
-function asStringRecord(value: unknown): Record<string, string> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
-  const entries = Object.entries(value)
-  return entries.every(([, item]) => typeof item === 'string') ? Object.fromEntries(entries as [string, string][]) : {}
-}
-
-/** Lit les réglages d'Orca sans jamais écrire ni lever : `null` dès qu'un maillon manque. */
-export function readOrcaSettings(userDataDir: string = ORCA_USER_DATA): OrcaSettings | null {
-  let db: DatabaseSync | null = null
-  try {
-    const index = JSON.parse(readFileSync(join(userDataDir, 'orca-profile-index.json'), 'utf8')) as { activeProfileId?: unknown }
-    if (typeof index.activeProfileId !== 'string' || index.activeProfileId === '') return null
-    db = new DatabaseSync(join(userDataDir, 'profiles', index.activeProfileId, 'profile-state.db'), { readOnly: true })
-    const row = db.prepare("select payload from profile_state_documents where domain='settings'").get()
-    if (!row) return null
-    const payload = JSON.parse(String(row.payload)) as { disabledTuiAgents?: unknown; agentCmdOverrides?: unknown }
-    if (!isStringArray(payload.disabledTuiAgents)) return null
-    return { disabled: payload.disabledTuiAgents, overrides: asStringRecord(payload.agentCmdOverrides) }
-  } catch {
-    return null
-  } finally {
-    try {
-      db?.close()
-    } catch {
-      // Fermeture best effort : la base est ouverte en lecture seule, rien à perdre.
-    }
-  }
 }
 
 /** Ne lit que ce qui se trouve entre les deux premiers marqueurs : le reste est du bruit de profil shell. */
@@ -192,7 +139,6 @@ export async function findCommands(
 }
 
 export const REAL_INVENTORY_DEPS: InventoryDeps = {
-  readSettings: () => readOrcaSettings(),
   findCommands: (tokens, onFallback) => findCommands(tokens, undefined, undefined, onFallback),
   now: Date.now
 }

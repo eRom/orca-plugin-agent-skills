@@ -63,6 +63,10 @@ export const addNote = atom<Note | null>(null)
 export const expandedRows = atom<string[]>([])
 /** Dossiers dont les pastilles repliées en résumé sont dépliées. */
 export const unfoldedChips = atom<string[]>([])
+/** Vrai quand la section « Agents » (masquer ou montrer un agent) est ouverte sous l'en-tête. */
+export const agentsOpen = atom(false)
+/** L'agent dont le réglage part au worker : son interrupteur attend la réponse. */
+export const savingAgent = atom<string | null>(null)
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const errorCodeOf = (error: unknown): string | undefined => (error as { code?: string } | null)?.code
@@ -142,6 +146,24 @@ export async function loadState(request: 'state.get' | 'state.refresh' = 'state.
     if (ticket === stateTicket) applyState(next)
   } catch (error) {
     if (ticket === stateTicket) set(loadError, messageOf(error))
+  }
+}
+
+export function toggleAgents(): void {
+  update(agentsOpen, (open) => !open)
+}
+
+/** Masque ou montre un agent pour tous les projets ; l'état rendu par le worker remplace celui affiché. */
+export async function setAgentHidden(agent: string, hidden: boolean): Promise<void> {
+  const ticket = ++stateTicket
+  set(savingAgent, agent)
+  try {
+    const next = await plugin.request('agents.setHidden', { agent, hidden })
+    if (ticket === stateTicket) applyState(next)
+  } catch (error) {
+    if (ticket === stateTicket) set(loadError, messageOf(error))
+  } finally {
+    set(savingAgent, null)
   }
 }
 

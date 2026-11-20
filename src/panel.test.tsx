@@ -66,6 +66,7 @@ function stateOf(options: StateOptions = {}): PanelState {
   return {
     workspace: options.workspace ?? { status: 'ready', id: 'identity:tool', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true },
     agents: agentViews(agents),
+    detected: agentViews(agents).map((agent) => ({ ...agent, hidden: false })),
     inventory: 'detected',
     rows,
     unsafeDirs: [],
@@ -106,6 +107,7 @@ async function open(setup: Setup = {}) {
     pathChecks: [] as string[],
     ops: [] as OpRequest[],
     stateReads: [] as string[],
+    hides: [] as { agent: string; hidden: boolean }[],
     /** L'identifiant d'espace de chaque demande qui en porte un, dans l'ordre. */
     workspaceIds: [] as string[]
   }
@@ -139,7 +141,14 @@ async function open(setup: Setup = {}) {
         log.workspaceIds.push(input.workspaceId)
         return setup.start ? setup.start(input) : { ok: true as const, opId: `op-${log.ops.length}` }
       },
-      'folder.pick': () => (setup.pick ? setup.pick() : { path: null })
+      'folder.pick': () => (setup.pick ? setup.pick() : { path: null }),
+      // Le worker factice applique le réglage à l'état courant et le rend, comme le vrai.
+      'agents.setHidden': (input: { agent: string; hidden: boolean }) => {
+        log.hides.push(input)
+        const detected = current.detected.map((agent) => (agent.id === input.agent ? { ...agent, hidden: input.hidden } : agent))
+        current = { ...current, detected, agents: detected.filter((agent) => !agent.hidden).map(({ hidden: _, ...view }) => view) }
+        return current
+      }
     }
   })
   const view = await mount(panel, { host, locale: setup.locale ?? 'fr-FR', theme: setup.theme })
@@ -875,6 +884,28 @@ test('a switch of workspace drops the half-typed add', async () => {
   await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
   assert.equal(view.find({ testId: 'read-path' }), null)
   assert.equal(view.valueOf(SEARCH_FIELD), '')
+  await expectClean(view)
+})
+
+test('the agents button lists every detected agent and hides one for every project', async () => {
+  const { view, log } = await open({ state: stateOf({ agents: ['claude', 'grok'], skills: [HANDWRITTEN] }) })
+  assert.equal(view.find({ type: 'Switch' }), null, 'the section starts closed')
+  await view.press({ label: FR.agentsOpenLabel })
+  assert.notEqual(view.find({ text: `${FR.agentsTitle} · 2/2` }), null)
+  assert.notEqual(view.find({ text: FR.agentsHint }), null)
+
+  await view.toggle({ type: 'Switch', label: 'Grok' })
+  assert.deepEqual(log.hides, [{ agent: 'grok', hidden: true }])
+  assert.notEqual(view.find({ text: `${FR.agentsTitle} · 1/2` }), null)
+  assert.equal(view.find({ type: 'Switch', label: 'Grok' })!.props.checked, false)
+  // Le dernier agent visible ne peut pas être masqué : sans agent, aucun dossier où écrire.
+  assert.equal(view.find({ type: 'Switch', label: 'Claude' })!.props.disabled, true)
+  const sources = view.findAll({ type: 'Image' }).map((image) => String(image.props.src))
+  assert.ok(sources.includes('agent-icons/dim/grok.png'), 'a hidden agent shows a dimmed icon in the section')
+  assert.ok(!sources.includes('agent-icons/grok.png'), 'a hidden agent has no chip on the skill row')
+
+  await view.press({ label: FR.agentsCloseLabel })
+  assert.equal(view.find({ type: 'Switch' }), null)
   await expectClean(view)
 })
 

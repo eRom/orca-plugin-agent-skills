@@ -16,6 +16,11 @@ export type Messages = {
   worktreeNote: string
   refreshLabel: string
   fallbackNote: string
+  agentsOpenLabel: string
+  agentsCloseLabel: string
+  agentsTitle: string
+  agentsHint: string
+  agentsNone: string
   loading: string
   loadFailed: string
   retry: string
@@ -141,7 +146,12 @@ const en: Messages = {
   homeWorkspace: 'The home folder is not a project.',
   worktreeNote: 'A skill added here reaches the other worktrees only once committed.',
   refreshLabel: 'Refresh',
-  fallbackNote: "Orca's agents not detected: adding for .agents and .claude",
+  fallbackNote: 'No agent detected: adding for .agents and .claude',
+  agentsOpenLabel: 'Choose agents',
+  agentsCloseLabel: 'Close agents',
+  agentsTitle: 'Agents on this computer',
+  agentsHint: 'A hidden agent gets no icon and no skills folder, in every project.',
+  agentsNone: 'No agent that reads skills was found on this computer.',
   loading: 'Loading skills',
   loadFailed: 'Could not read the skills of this project.',
   retry: 'Retry',
@@ -259,7 +269,12 @@ const fr: Messages = {
   homeWorkspace: "Le dossier personnel n'est pas un projet.",
   worktreeNote: "Ajoutée ici, une skill n'arrive dans les autres worktrees qu'une fois commitée.",
   refreshLabel: 'Actualiser',
-  fallbackNote: "Agents d'Orca non détectés : ajout pour .agents et .claude",
+  fallbackNote: 'Aucun agent détecté : ajout pour .agents et .claude',
+  agentsOpenLabel: 'Choisir les agents',
+  agentsCloseLabel: 'Fermer les agents',
+  agentsTitle: 'Agents sur cet ordinateur',
+  agentsHint: "Un agent masqué n'a plus d'icône ni de dossier de skills, dans tous les projets.",
+  agentsNone: "Aucun agent qui lit les skills n'a été trouvé sur cet ordinateur.",
   loading: 'Chargement des skills',
   loadFailed: 'Impossible de lire les skills de ce projet.',
   retry: 'Réessayer',
