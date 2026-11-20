@@ -22,10 +22,13 @@ function inventoryDeps(found: readonly string[] = ROMAIN_COMMANDS): { deps: Inve
       probe.calls++
       return new Set(found)
     },
-    now: Date.now
+    now: () => Date.now() + clockSkew
   }
   return { deps, probe }
 }
+
+/** Avance l'horloge de l'inventaire seulement (pas celle du harnais) : de quoi vieillir le cache. */
+let clockSkew = 0
 
 type Row = { id: string; kind: 'worktree'; name: string; projectId: string; path: string; branch: string; hostId: string }
 const rowOf = (path: string, over: Partial<Row> = {}): Row => ({
@@ -316,6 +319,36 @@ test('a hidden agent loses its chip and its folder in every project, and stays h
   const shown = await again.worker.request('agents.setHidden', { agent: 'grok', hidden: false })
   assert.ok(shown.agents.some((agent) => agent.id === 'grok'))
   await again.worker.deactivate()
+})
+
+test('an unreadable storage fails the toggle instead of forgetting the hidden agents', async () => {
+  const setup = await boot({ storage: { [HIDDEN_AGENTS_KEY]: ['codex', 'pi'] } })
+  await stateOf(setup.worker)
+  setup.controls.afterStorageGet = async (key) => {
+    if (key === HIDDEN_AGENTS_KEY) throw new Error('storage unavailable')
+  }
+  await assert.rejects(setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true }))
+  assert.deepEqual(setup.host.data().storage[HIDDEN_AGENTS_KEY], ['codex', 'pi'])
+  setup.controls.afterStorageGet = undefined
+  await setup.worker.deactivate()
+})
+
+test('a toggle reuses the known inventory, however old, instead of probing the shell again', async () => {
+  const setup = await boot()
+  await stateOf(setup.worker)
+  const probes = setup.probe.calls
+  // Plus vieux que le délai de 10 s : `state.get` relancerait la sonde, la bascule non.
+  clockSkew = 60_000
+  try {
+    await setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true })
+    assert.equal(setup.probe.calls, probes)
+    // Témoin : une simple lecture, elle, relance bien la sonde sur un cache périmé.
+    await stateOf(setup.worker)
+    assert.equal(setup.probe.calls, probes + 1)
+  } finally {
+    clockSkew = 0
+  }
+  await setup.worker.deactivate()
 })
 
 test('refuses to hide the last visible agent', async () => {

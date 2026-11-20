@@ -16,6 +16,7 @@ export type Messages = {
   worktreeNote: string
   refreshLabel: string
   fallbackNote: string
+  fallbackHiddenNote: string
   agentsOpenLabel: string
   agentsCloseLabel: string
   agentsTitle: string
@@ -150,7 +151,8 @@ const en: Messages = {
   agentsOpenLabel: 'Choose agents',
   agentsCloseLabel: 'Close agents',
   agentsTitle: 'Agents on this computer',
-  agentsHint: 'A hidden agent gets no icon and no skills folder, in every project.',
+  agentsHint: 'A hidden agent loses its icons, and an addition no longer writes for it, in every project. One agent always stays visible.',
+  fallbackHiddenNote: 'Every detected agent is hidden: adding for .agents and .claude',
   agentsNone: 'No agent that reads skills was found on this computer.',
   loading: 'Loading skills',
   loadFailed: 'Could not read the skills of this project.',
@@ -273,7 +275,8 @@ const fr: Messages = {
   agentsOpenLabel: 'Choisir les agents',
   agentsCloseLabel: 'Fermer les agents',
   agentsTitle: 'Agents sur cet ordinateur',
-  agentsHint: "Un agent masqué n'a plus d'icône ni de dossier de skills, dans tous les projets.",
+  agentsHint: "Un agent masqué perd ses icônes et un ajout n'écrit plus pour lui, dans tous les projets. Un agent reste toujours visible.",
+  fallbackHiddenNote: 'Tous les agents détectés sont masqués : ajout pour .agents et .claude',
   agentsNone: "Aucun agent qui lit les skills n'a été trouvé sur cet ordinateur.",
   loading: 'Chargement des skills',
   loadFailed: 'Impossible de lire les skills de ce projet.',

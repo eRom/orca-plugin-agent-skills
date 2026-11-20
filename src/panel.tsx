@@ -147,7 +147,7 @@ function renderReady(state: PanelState) {
     <Stack gap="md">
       {state.inventory === 'fallback' ? (
         <Text muted size="xs">
-          {m.fallbackNote}
+          {state.detected.length > 0 ? m.fallbackHiddenNote : m.fallbackNote}
         </Text>
       ) : null}
       {state.workspace.status === 'ready' && state.workspace.linkedWorktree ? (

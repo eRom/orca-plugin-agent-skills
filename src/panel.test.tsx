@@ -893,6 +893,10 @@ test('the agents button lists every detected agent and hides one for every proje
   await view.press({ label: FR.agentsOpenLabel })
   assert.notEqual(view.find({ text: `${FR.agentsTitle} · 2/2` }), null)
   assert.notEqual(view.find({ text: FR.agentsHint }), null)
+  // Grok ne lit pas `.claude/skills` : une pastille estompée sur la ligne, une icône pleine dans la section.
+  const count = (src: string): number => view.findAll({ type: 'Image' }).filter((image) => image.props.src === src).length
+  assert.equal(count('agent-icons/dim/grok.png'), 1)
+  assert.equal(count('agent-icons/grok.png'), 1)
 
   await view.toggle({ type: 'Switch', label: 'Grok' })
   assert.deepEqual(log.hides, [{ agent: 'grok', hidden: true }])
@@ -900,12 +904,20 @@ test('the agents button lists every detected agent and hides one for every proje
   assert.equal(view.find({ type: 'Switch', label: 'Grok' })!.props.checked, false)
   // Le dernier agent visible ne peut pas être masqué : sans agent, aucun dossier où écrire.
   assert.equal(view.find({ type: 'Switch', label: 'Claude' })!.props.disabled, true)
-  const sources = view.findAll({ type: 'Image' }).map((image) => String(image.props.src))
-  assert.ok(sources.includes('agent-icons/dim/grok.png'), 'a hidden agent shows a dimmed icon in the section')
-  assert.ok(!sources.includes('agent-icons/grok.png'), 'a hidden agent has no chip on the skill row')
+  // Masqué : plus de pastille sur la ligne, seule reste l'icône estompée de la section.
+  assert.equal(count('agent-icons/dim/grok.png'), 1)
+  assert.equal(count('agent-icons/grok.png'), 0)
 
   await view.press({ label: FR.agentsCloseLabel })
   assert.equal(view.find({ type: 'Switch' }), null)
+  await expectClean(view)
+})
+
+test('a fallback with every detected agent hidden says so, not "no agent detected"', async () => {
+  const detected = agentViews(['grok']).map((agent) => ({ ...agent, hidden: true }))
+  const { view } = await open({ state: stateOf({ agents: [], overrides: { inventory: 'fallback', detected } }) })
+  assert.notEqual(view.find({ text: FR.fallbackHiddenNote }), null)
+  assert.equal(view.find({ text: FR.fallbackNote }), null)
   await expectClean(view)
 })
 
@@ -914,6 +926,7 @@ test('shows the inventory fallback, the unsafe dirs, the unreadable lock and the
     skills: [HANDWRITTEN],
     overrides: {
       inventory: 'fallback',
+      detected: [],
       unsafeDirs: ['.claude/skills'],
       lockUnreadable: true,
       capabilities: { trash: false, folderPicker: true }

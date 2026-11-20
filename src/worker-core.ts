@@ -130,18 +130,21 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     return run
   }
 
-  /** Une demande de nouvelle sonde (`force`) n'attend pas une sonde déjà en vol : elle pourrait dater d'avant la demande. */
-  function listInventory(force: boolean): Promise<Inventory> {
+  /**
+   * Une demande de nouvelle sonde (`force`) n'attend pas une sonde déjà en vol : elle pourrait dater d'avant la demande.
+   * `anyAge` : un inventaire déjà connu sert, même plus vieux que le délai (geste qui ne dépend pas d'une installation récente).
+   */
+  function listInventory(force: boolean, anyAge = false): Promise<Inventory> {
     if (!force && probing) return probing
-    if (!force && inventory && deps.inventory.now() - inventory.detectedAt < INVENTORY_TTL_MS) return Promise.resolve(inventory)
+    if (!force && inventory && (anyAge || deps.inventory.now() - inventory.detectedAt < INVENTORY_TTL_MS)) return Promise.resolve(inventory)
     return probe()
   }
 
   /** Agents actifs : installés et non masqués. Inventaire vide ou sans agent qui gère les skills : repli sur `.agents` et `.claude`. */
-  async function agentsOf(force = false): Promise<Agents> {
+  async function agentsOf(force = false, anyAge = false): Promise<Agents> {
     let found: Inventory | null = null
     try {
-      found = await listInventory(force)
+      found = await listInventory(force, anyAge)
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`)
     }
@@ -202,9 +205,9 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     })
 
   /** L'état est relu sur le disque ; une lecture n'écrit jamais : une exclusion ne tombe que par un geste (spec §5.4). */
-  async function currentState(force = false): Promise<PanelState> {
+  async function currentState(force = false, anyAge = false): Promise<PanelState> {
     const focused = await focusedWorkspace()
-    const agents = await agentsOf(force)
+    const agents = await agentsOf(force, anyAge)
     const base = {
       workspace: focused.view,
       agents: agentViews(agents.active),
@@ -235,14 +238,16 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
   orca.panels.handle('state.get', () => currentState())
   orca.panels.handle('state.refresh', () => currentState(true))
   // Masquer ou montrer un agent : passe par la file des écritures, puis rend l'état recalculé (lu dans le cache d'inventaire).
+  // Le cache sert quel que soit son âge : relancer la sonde (environ 2 s) à chaque bascule n'apporte rien à ce geste.
   orca.panels.handle('agents.setHidden', async ({ agent, hidden }) => {
     await serialize(async () => {
-      const current = await readHidden()
-      const { installed } = await agentsOf()
+      // Lecture sans filet : un stockage illisible doit faire échouer le geste, pas réécrire la liste à partir de rien.
+      const current = parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY))
+      const { installed } = await agentsOf(false, true)
       const next = setHidden(current, installed, agent, hidden)
       if (next !== current) await orca.storage.set(HIDDEN_AGENTS_KEY, [...next])
     })
-    return currentState()
+    return currentState(false, true)
   })
   orca.events.on('workspace.changed', () => postStateSafely())
 

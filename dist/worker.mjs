@@ -22123,17 +22123,17 @@ async function activateWith(orca, deps) {
     probing = run;
     return run;
   }
-  function listInventory(force) {
+  function listInventory(force, anyAge = false) {
     if (!force && probing)
       return probing;
-    if (!force && inventory && deps.inventory.now() - inventory.detectedAt < INVENTORY_TTL_MS)
+    if (!force && inventory && (anyAge || deps.inventory.now() - inventory.detectedAt < INVENTORY_TTL_MS))
       return Promise.resolve(inventory);
     return probe();
   }
-  async function agentsOf(force = false) {
+  async function agentsOf(force = false, anyAge = false) {
     let found = null;
     try {
-      found = await listInventory(force);
+      found = await listInventory(force, anyAge);
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`);
     }
@@ -22182,9 +22182,9 @@ async function activateWith(orca, deps) {
     const spec = agentById(id);
     return spec ? [{ id, label: spec.label, icon: spec.icon, trust: TRUST_GATED[id] ?? null }] : [];
   });
-  async function currentState(force = false) {
+  async function currentState(force = false, anyAge = false) {
     const focused = await focusedWorkspace();
-    const agents2 = await agentsOf(force);
+    const agents2 = await agentsOf(force, anyAge);
     const base = {
       workspace: focused.view,
       agents: agentViews(agents2.active),
@@ -22212,13 +22212,13 @@ async function activateWith(orca, deps) {
   orca.panels.handle("state.refresh", () => currentState(true));
   orca.panels.handle("agents.setHidden", async ({ agent: agent2, hidden }) => {
     await serialize(async () => {
-      const current2 = await readHidden();
-      const { installed } = await agentsOf();
+      const current2 = parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY));
+      const { installed } = await agentsOf(false, true);
       const next = setHidden(current2, installed, agent2, hidden);
       if (next !== current2)
         await orca.storage.set(HIDDEN_AGENTS_KEY, [...next]);
     });
-    return currentState();
+    return currentState(false, true);
   });
   orca.events.on("workspace.changed", () => postStateSafely());
   function releasePreview() {
