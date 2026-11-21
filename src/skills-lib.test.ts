@@ -138,16 +138,18 @@ test('untrack leaves a same-named folder in an unmanaged dir alone', async () =>
   const cwd = tempDir('lib-unmanaged')
   const bin = tempDir('lib-unmanaged-bin')
   await installAlpha(cwd)
-  const vibe = join(cwd, '.vibe/skills/alpha')
-  await mkdir(vibe, { recursive: true })
-  await writeFile(join(vibe, 'SKILL.md'), '---\nname: alpha\ndescription: by hand\n---\nMine\n')
+  // `.continue/` dans le projet suffit à la bibliothèque pour détecter Continue, quel que soit l'OS ; `vibe`, lui,
+  // dépendait de `~/.vibe` sur la machine. `.continue/skills` n'est pas un dossier géré par le plugin.
+  const unmanaged = join(cwd, '.continue/skills/alpha')
+  await mkdir(unmanaged, { recursive: true })
+  await writeFile(join(unmanaged, 'SKILL.md'), '---\nname: alpha\ndescription: by hand\n---\nMine\n')
   await rename(join(cwd, '.agents/skills/alpha'), join(bin, 'universal'))
   await rename(join(cwd, '.claude/skills/alpha'), join(bin, 'claude'))
   await rename(join(cwd, '.grok/skills/alpha'), join(bin, 'grok'))
   const result = await realSkillsLib.untrack(['alpha'], cwd, LIB_AGENTS)
-  assert.equal(await isDir(vibe), true, 'the unmanaged copy survives')
-  assert.match(await readFile(join(vibe, 'SKILL.md'), 'utf8'), /Mine/)
-  // La copie `.vibe` (agent non visé) retient l'entrée du lock : la bibliothèque la garde, l'adaptateur le signale.
+  assert.equal(await isDir(unmanaged), true, 'the unmanaged copy survives')
+  assert.match(await readFile(join(unmanaged, 'SKILL.md'), 'utf8'), /Mine/)
+  // La copie `.continue` (agent non visé) retient l'entrée du lock : la bibliothèque la garde, l'adaptateur le signale.
   assert.equal((await rawLockKeys(cwd)).includes('alpha'), true)
   assert.deepEqual(result.failed.map((failure) => failure.code), ['PLUGIN_LOCK_KEPT'])
 })

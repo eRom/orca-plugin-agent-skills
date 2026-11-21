@@ -77,12 +77,15 @@ test('trasher rejects with stderr on a non-zero exit', async () => {
 })
 
 test('execRunner runs a binary without a shell and returns its output', async () => {
-  const result = await execRunner('/bin/echo', ['$HOME; echo injected'])
-  assert.deepEqual(result, { code: 0, stdout: '$HOME; echo injected\n', stderr: '' })
+  // Le binaire du runtime existe sur tous les OS, contrairement à `/bin/echo`.
+  const echo = 'process.stdout.write(process.argv[1])'
+  const result = await execRunner(process.execPath, ['-e', echo, '$HOME; echo injected'])
+  assert.deepEqual(result, { code: 0, stdout: '$HOME; echo injected', stderr: '' })
 })
 
 test('execRunner reports a failing exit code instead of throwing', async () => {
-  const result = await execRunner('/bin/ls', ['/nonexistent-agent-skills-path'])
+  const fail = 'process.stderr.write("failed"); process.exit(3)'
+  const result = await execRunner(process.execPath, ['-e', fail])
   assert.notEqual(result.code, 0)
   assert.ok(result.stderr.length > 0)
 })

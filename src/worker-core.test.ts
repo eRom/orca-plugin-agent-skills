@@ -731,7 +731,7 @@ test('preview resolves ~ and relative paths and reports a missing folder', async
   mkdirSync(join(setup.home, 'mine'))
   const homeAnswer = await setup.worker.request('source.preview', { kind: 'path', text: '~/mine', workspaceId: WS })
   assert.equal(homeAnswer.ok, true)
-  if (homeAnswer.ok) assert.deepEqual(homeAnswer.label, { kind: 'local', path: '~/mine' })
+  if (homeAnswer.ok) assert.deepEqual(homeAnswer.label, { kind: 'local', path: join('~', 'mine') })
   assert.deepEqual(seen, [inside, join(setup.home, 'mine')])
   assert.deepEqual(await setup.worker.request('source.preview', { kind: 'path', text: '/no/such/folder', workspaceId: WS }), {
     ok: false,

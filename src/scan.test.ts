@@ -1,5 +1,5 @@
 // Balayage des dossiers gérés : tout se passe dans des projets temporaires.
-import { chmod, mkdir, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, realpath, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { contentHash } from './fsops'
@@ -142,7 +142,7 @@ test('classifies internal and external links', async () => {
   assert.ok(x.copies.every((copy) => copy.hash === hash))
   const link = x.copies[1]!
   assert.equal(link.path, join(root, '.claude/skills/x'))
-  assert.match(link.realPath, /\.agents\/skills\/x$/)
+  assert.equal(link.realPath, await realpath(target))
   const y = skills.find((skill) => skill.folder === 'y')!
   assert.equal(y.copies[0]!.kind, 'external-link')
 })
@@ -213,6 +213,8 @@ test('flags a managed dir whose parent dir is a link inside the project', async 
 })
 
 test('skips an entry that cannot be read and keeps listing the others', async () => {
+  // Sous Windows, `chmod 0o000` ne retire pas le droit de lecture : l'entrée resterait lisible.
+  if (process.platform === 'win32') return
   const root = tempDir('scan-unreadable')
   writeSkill(root, '.claude/skills', 'good')
   const locked = writeSkill(root, '.claude/skills', 'locked')

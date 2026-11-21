@@ -1,5 +1,5 @@
 // Chemins saisis : reconnaissance, résolution, abréviation du home, appartenance à un dossier.
-import { win32 } from 'node:path'
+import { posix, win32 } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { abbreviateHome, isInside, isNetworkPath, isPathInput, resolveInputPath } from './paths'
 
@@ -31,19 +31,20 @@ test('a network path is a UNC path, and only on Windows', () => {
   assert.equal(isNetworkPath('C:\\x', 'win32'), false)
 })
 
+// API POSIX imposée : par défaut, ces fonctions prennent l'API native, win32 sous Windows.
 test('resolves typed paths', () => {
-  assert.equal(resolveInputPath('~/dev/a/', '/p', HOME), '/Users/me/dev/a')
-  assert.equal(resolveInputPath('~', '/p', HOME), '/Users/me')
-  assert.equal(resolveInputPath('./s', '/p', HOME), '/p/s')
-  assert.equal(resolveInputPath('../s', '/p/q', HOME), '/p/s')
-  assert.equal(resolveInputPath('/abs/x/', '/p', HOME), '/abs/x')
+  assert.equal(resolveInputPath('~/dev/a/', '/p', HOME, posix), '/Users/me/dev/a')
+  assert.equal(resolveInputPath('~', '/p', HOME, posix), '/Users/me')
+  assert.equal(resolveInputPath('./s', '/p', HOME, posix), '/p/s')
+  assert.equal(resolveInputPath('../s', '/p/q', HOME, posix), '/p/s')
+  assert.equal(resolveInputPath('/abs/x/', '/p', HOME, posix), '/abs/x')
 })
 
 test('abbreviates the home dir only on a path boundary', () => {
-  assert.equal(abbreviateHome('/Users/me/dev/x', HOME), '~/dev/x')
-  assert.equal(abbreviateHome('/Users/me', HOME), '~')
-  assert.equal(abbreviateHome('/Users/meow/x', HOME), '/Users/meow/x')
-  assert.equal(abbreviateHome('/users/me/x', HOME), '/users/me/x', 'POSIX paths stay case-sensitive')
+  assert.equal(abbreviateHome('/Users/me/dev/x', HOME, posix), '~/dev/x')
+  assert.equal(abbreviateHome('/Users/me', HOME, posix), '~')
+  assert.equal(abbreviateHome('/Users/meow/x', HOME, posix), '/Users/meow/x')
+  assert.equal(abbreviateHome('/users/me/x', HOME, posix), '/users/me/x', 'POSIX paths stay case-sensitive')
 })
 
 test('isInside respects path boundaries', () => {
