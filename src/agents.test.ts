@@ -49,6 +49,11 @@ test('byLabel sorts agent ids by their label, ignoring case', () => {
   ])
 })
 
+test('byLabel ignores case: a byte sort would put the capital first', () => {
+  // Ids inconnus, donc triés par l'id lui-même : « Beta » < « alpha » à l'octet, mais « alpha » < « Beta » sans la casse.
+  assert.deepEqual(byLabel(['Beta', 'alpha']), ['alpha', 'Beta'])
+})
+
 test('byLabel keeps an unknown id, sorted by the id itself', () => {
   assert.deepEqual(byLabel(['zzz-unknown', 'claude']), ['claude', 'zzz-unknown'])
 })

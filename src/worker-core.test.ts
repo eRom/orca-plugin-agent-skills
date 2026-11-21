@@ -618,7 +618,13 @@ test('exclusions stored by v0.1 are ignored: the agent is absent, nothing is rea
   const state = await stateOf(setup.worker)
   assert.equal(agentState(state, 'alpha', 'grok'), 'absent')
   assert.ok(state.rows[0]!.missingFor.includes('grok'))
-  assert.ok(state.rows[0]!.agents.every((agent) => agent.state === 'sees' || agent.state === 'absent'))
+  assert.deepEqual(
+    ['claude', 'grok'].map((agent) => [agent, agentState(state, 'alpha', agent)]),
+    [
+      ['claude', 'sees'],
+      ['grok', 'absent']
+    ]
+  )
   assert.deepEqual(setup.host.data().storage['exclusions.v1'], legacy, 'the stored value is left untouched')
   await setup.worker.deactivate()
 })

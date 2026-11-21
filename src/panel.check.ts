@@ -5,14 +5,15 @@ import type { CopyKind } from './scan'
 import type { ManagedDir } from './skill-dirs'
 import type { SkillRow } from './visibility'
 
+// Triés par libellé, comme le worker les sert au panneau.
 const AGENTS: AgentView[] = [
+  { id: 'antigravity', label: 'Antigravity', icon: 'agent-icons/antigravity.png', trust: null },
   { id: 'claude', label: 'Claude', icon: 'agent-icons/claude.png', trust: null },
   { id: 'codex', label: 'Codex', icon: 'agent-icons/codex.png', trust: null },
+  { id: 'dsh', label: 'DeepSeek Harness', icon: 'agent-icons/dsh.png', trust: null },
   { id: 'grok', label: 'Grok', icon: 'agent-icons/grok.png', trust: null },
   { id: 'opencode', label: 'OpenCode', icon: 'agent-icons/opencode.png', trust: null },
-  { id: 'pi', label: 'Pi', icon: 'agent-icons/pi.png', trust: null },
-  { id: 'antigravity', label: 'Antigravity', icon: 'agent-icons/antigravity.png', trust: null },
-  { id: 'dsh', label: 'DeepSeek Harness', icon: 'agent-icons/dsh.png', trust: null }
+  { id: 'pi', label: 'Pi', icon: 'agent-icons/pi.png', trust: null }
 ]
 
 /** Qui lit quel dossier, pour les sept agents de Romain. */

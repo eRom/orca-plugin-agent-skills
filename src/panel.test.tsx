@@ -620,8 +620,6 @@ test('the expanded row of a skill in two identical dirs shows its description an
   await view.press({ label: FR.expandLabel('alpha') })
   assert.notEqual(view.find({ type: 'Text', text: 'About alpha' }), null)
   assert.equal(view.find({ type: 'Code', text: '.claude/skills' }), null)
-  assert.equal(view.find({ text: /Retirer d'ici/ }), null)
-  assert.equal(view.find({ text: /Ajouter pour/ }), null)
   assert.equal(view.find({ text: FR.keepThis }), null, 'identical copies offer no version to keep')
   // Les seuls boutons : le bandeau « Absente pour Grok » (Propager) ; l'icône corbeille est un IconButton.
   assert.deepEqual(
@@ -636,9 +634,32 @@ test('a row whose copies differ still offers to keep one version once expanded',
   const divergent = diskSkill('x', [copyOf('.claude/skills', 'x', 'hash-claude'), copyOf('.agents/skills', 'x', 'hash-agents')])
   const { view } = await open({ state: stateOf({ skills: [divergent] }) })
   await view.press({ label: FR.expandLabel('x') })
-  assert.equal(view.findAll({ type: 'Button', text: FR.keepThis }).length, 2)
-  assert.equal(view.find({ text: /Retirer d'ici/ }), null)
-  assert.equal(view.find({ text: /Ajouter pour/ }), null)
+  assert.deepEqual(
+    view.findAll({ type: 'Button' }).map((button) => button.text),
+    [FR.propagate, FR.keepThis, FR.keepThis]
+  )
+  await expectClean(view)
+})
+
+test('the "Read by" list of a divergent version follows the alphabetical agent order, not the folder order', async () => {
+  // Claude lit `.claude/skills`, Codex et Pi lisent `.agents/skills` : `.agents` passe avant `.claude` dans les dossiers gérés.
+  const divergent = diskSkill('x', [
+    copyOf('.agents/skills', 'x', 'hash-shared'),
+    copyOf('.claude/skills', 'x', 'hash-shared'),
+    copyOf('.grok/skills', 'x', 'hash-grok')
+  ])
+  const { view } = await open({ state: stateOf({ agents: ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'opencode', 'pi'], skills: [divergent] }) })
+  await view.press({ label: FR.expandLabel('x') })
+  assert.notEqual(view.find({ type: 'Text', text: FR.readBy('Antigravity, Claude, Codex, DeepSeek Harness, OpenCode, Pi') }), null)
+  assert.notEqual(view.find({ type: 'Text', text: FR.readBy('Grok') }), null)
+  await expectClean(view)
+})
+
+test('a row with nothing to detail has no expand button, a row with a description has one', async () => {
+  const bare = diskSkill('bare', [copyOf('.claude/skills', 'bare', 'h1'), copyOf('.agents/skills', 'bare', 'h1')], '')
+  const { view } = await open({ state: stateOf({ skills: [bare, SPREAD[0]!] }) })
+  assert.equal(view.find({ label: FR.expandLabel('bare') }), null, 'empty description, identical copies, no trust note')
+  assert.notEqual(view.find({ label: FR.expandLabel('alpha') }), null)
   await expectClean(view)
 })
 

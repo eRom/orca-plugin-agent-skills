@@ -20,14 +20,14 @@
     },
     {
       "path": "media/screenshot-detail-dark.png",
-      "alt": "A skill's details in the dark theme: the folders that hold it, which agents read each one, and two diverging versions.",
-      "caption": "Copies that drifted apart",
+      "alt": "A skill's details in the dark theme: its description, and two diverging versions, each with the agents that read it and a Keep this one button.",
+      "caption": "Keep the version you want",
       "theme": "dark"
     },
     {
       "path": "media/screenshot-detail-light.png",
-      "alt": "The same skill details in the light theme.",
-      "caption": "Copies that drifted apart",
+      "alt": "The same skill details in the light theme: its description, and diverging versions with Keep this one.",
+      "caption": "Keep the version you want",
       "theme": "light"
     }
   ],

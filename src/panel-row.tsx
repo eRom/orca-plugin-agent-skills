@@ -181,7 +181,9 @@ function renderVersions(row: SkillRow, ctx: RowContext) {
   return (
     <Stack key={`versions-${row.folder}`} gap="sm">
       {row.versions.map((version, index) => {
-        const feeds = [...new Set(row.copies.filter((copy) => version.dirs.includes(copy.dir)).flatMap((copy) => copy.feeds))]
+        // L'ordre de `row.agents` (alphabétique par libellé), pas celui des dossiers.
+        const readers = new Set(row.copies.filter((copy) => version.dirs.includes(copy.dir)).flatMap((copy) => copy.feeds))
+        const feeds = row.agents.map((entry) => entry.agent).filter((agent) => readers.has(agent))
         return (
           <Box key={`version-${row.folder}-${version.hash}`} border radius="sm" padding="sm" gap="xs">
             <Text weight="medium" size="xs">
@@ -214,10 +216,20 @@ function renderVersions(row: SkillRow, ctx: RowContext) {
   )
 }
 
+/** Les approbations à rappeler : celles des agents actifs de la ligne qui en demandent une. */
+function trustsOf(row: SkillRow, state: PanelState) {
+  return new Set(state.agents.filter((agent) => row.agents.some((entry) => entry.agent === agent.id)).flatMap((agent) => (agent.trust ? [agent.trust] : [])))
+}
+
+/** Vrai quand le détail montre quelque chose : sinon le bouton de dépli n'a rien à ouvrir. */
+function hasDetails(row: SkillRow, state: PanelState): boolean {
+  return row.description !== '' || row.versions.length > 1 || trustsOf(row, state).size > 0
+}
+
 /** Le détail : description, versions divergentes, approbations. */
 function renderDetails(row: SkillRow, ctx: RowContext) {
   const { m, state } = ctx
-  const trusts = new Set(state.agents.filter((agent) => row.agents.some((entry) => entry.agent === agent.id)).flatMap((agent) => (agent.trust ? [agent.trust] : [])))
+  const trusts = trustsOf(row, state)
   return (
     <Stack key={`details-${row.folder}`} gap="sm">
       {row.description !== '' ? (
@@ -242,7 +254,8 @@ function renderDetails(row: SkillRow, ctx: RowContext) {
 
 export function renderRow(row: SkillRow, ctx: RowContext) {
   const { m, state, busy } = ctx
-  const open = read(expandedRows).includes(row.folder)
+  const details = hasDetails(row, state)
+  const open = details && read(expandedRows).includes(row.folder)
   const note = read(notes)[row.folder]
   const missing = row.agents.filter((agent) => agent.state === 'absent').map((agent) => labelOf(state, agent.agent))
   // Seule la ligne visée par le geste montre sa progression (un ajout n'a pas de ligne : son progrès est sous le champ).
@@ -258,13 +271,15 @@ export function renderRow(row: SkillRow, ctx: RowContext) {
           {renderExternalTag(row, m)}
         </Box>
         <Box key={`actions-${row.folder}`} direction="row" gap="xs" shrink={false}>
-          <IconButton
-            icon={open ? 'collapse' : 'expand'}
-            label={open ? m.collapseLabel(row.displayName) : m.expandLabel(row.displayName)}
-            variant="ghost"
-            size="sm"
-            onPress={() => toggleExpanded(row.folder)}
-          />
+          {details ? (
+            <IconButton
+              icon={open ? 'collapse' : 'expand'}
+              label={open ? m.collapseLabel(row.displayName) : m.expandLabel(row.displayName)}
+              variant="ghost"
+              size="sm"
+              onPress={() => toggleExpanded(row.folder)}
+            />
+          ) : null}
           <IconButton
             icon="delete"
             label={m.removeSkillLabel(row.displayName)}

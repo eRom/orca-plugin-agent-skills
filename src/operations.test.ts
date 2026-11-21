@@ -272,7 +272,7 @@ test('keepVersion copies the chosen version over the others after trashing them'
   writeSkill(root, '.claude/skills', 'alpha', 'name: alpha', 'v2\n')
   writeSkill(root, '.grok/skills', 'alpha', 'name: alpha', 'v2\n')
   const chosen = await hashOf(root, '.claude/skills', 'alpha')
-  const result = success(await keepVersion(ctx, 'alpha', chosen))
+  success(await keepVersion(ctx, 'alpha', chosen))
   assert.deepEqual(trash.trashed, [join(root, '.agents/skills/alpha')])
   assert.match(await readFile(join(trash.moved.get(join(root, '.agents/skills/alpha'))!, 'SKILL.md'), 'utf8'), /v1/)
   for (const dir of ['.agents/skills', '.claude/skills', '.grok/skills']) assert.equal(await hashOf(root, dir, 'alpha'), chosen, dir)
