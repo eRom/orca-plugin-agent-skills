@@ -3,6 +3,9 @@
 Research of 2026-11-16, primary sources only (official docs, the agent's own repository). `src/skill-dirs.ts` encodes
 this table: only **verified** reads count, an unverified read is treated as absent. Re-check before each release.
 
+Which agents are detected, and from which source (Orca's history, then the config directories of the section
+"Config directories used for detection" below), is described for users in the README, section "Platforms".
+
 Managed directories (the only ones the plugin reads, lists, writes or removes): `.agents/skills`, `.claude/skills`,
 `.grok/skills`, `.kiro/skills`, `.qoder/skills`, `.codebuddy/skills`, `.zcode/skills`, `.trae/skills`,
 `.openclaude/skills`, `.prime/agent/skills`. Never the root `skills/`.
