@@ -15,8 +15,12 @@ function fakeRunner(result: { code: number; stdout: string; stderr: string }): {
 
 const OK = { code: 0, stdout: '', stderr: '' }
 
-test('only macOS is verified in this version', () => {
-  assert.deepEqual([...TRASH_VERIFIED], ['darwin'])
+test('every verified platform has a ready Trash, except Windows which has none', () => {
+  for (const platform of TRASH_VERIFIED) {
+    const { run } = fakeRunner(OK)
+    const { status } = systemTrasher(platform, () => true, run)
+    assert.equal(status, platform === 'win32' ? 'unverified' : 'ready', platform)
+  }
 })
 
 test('darwin keeps /usr/bin/trash', async () => {
