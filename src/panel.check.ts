@@ -84,7 +84,17 @@ const SCENARIOS: Record<string, PanelState> = {
   ready: stateOf({}),
   fallback: stateOf({ inventory: 'fallback', agents: [], rows: READY_ROWS.map((r) => ({ ...r, agents: [], missingFor: [], excluded: [] })) }),
   remote: stateOf({ workspace: { status: 'remote' }, rows: [] }),
-  noWorkspace: stateOf({ workspace: { status: 'none' }, rows: [] })
+  noWorkspace: stateOf({ workspace: { status: 'none' }, rows: [] }),
+  // Windows : racine POSIX d'une distribution WSL, aucun geste.
+  wsl: stateOf({ workspace: { status: 'wsl' }, rows: [], capabilities: { trash: 'unverified', folderPicker: false }, platform: 'win32' }),
+  // Windows : la Corbeille n'a aucun moyen en v0.2, le bandeau dit que remplacer et retirer sont refusés.
+  trashUnverified: stateOf({ capabilities: { trash: 'unverified', folderPicker: false }, platform: 'win32' }),
+  // Espace sur un partage réseau : pas de Corbeille, remplacer et retirer sont refusés.
+  trashNetwork: stateOf({
+    workspace: { status: 'ready', id: 'identity:share', name: 'shared-project', branch: 'main', linkedWorktree: false, network: true },
+    capabilities: { trash: 'network', folderPicker: false },
+    platform: 'win32'
+  })
 }
 
 /** Chaque état en sombre, puis en clair (c'est le thème clair qui sert les variantes d'icônes `on-light/`). */

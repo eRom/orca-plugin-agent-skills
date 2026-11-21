@@ -72,3 +72,26 @@ test('a burst of claude sessions keeps claude only', async () => {
   const host = hostOf(() => ({ sessions, truncated: true }))
   assert.deepEqual(await listHistoryAgents(host.call, present, () => {}), new Set(['claude']))
 })
+
+test('a malformed answer is unavailable, not a crash', async () => {
+  for (const answer of [{ sessions: null }, { sessions: [null] }, {}]) {
+    const lines: string[] = []
+    const host = hostOf(() => answer)
+    assert.equal(await listHistoryAgents(host.call, present, (line) => lines.push(line)), null, JSON.stringify(answer))
+    assert.ok(lines.includes('history unavailable reason=malformed'), JSON.stringify(answer))
+  }
+})
+
+test('an entry without a string agent is ignored', async () => {
+  const host = hostOf(() => ({ sessions: [{ agent: 3 }], truncated: false }))
+  assert.equal(await listHistoryAgents(host.call, present, () => {}), null)
+})
+
+test('a missing agent.listSessions (unknown_method) is unavailable', async () => {
+  const lines: string[] = []
+  const host = hostOf(() => {
+    throw hostError('unknown_method')
+  })
+  assert.equal(await listHistoryAgents(host.call, present, (line) => lines.push(line)), null)
+  assert.ok(lines.includes('history unavailable reason=unknown_method'))
+})

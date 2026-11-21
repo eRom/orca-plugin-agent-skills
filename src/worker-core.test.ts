@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { assert, mockHost, mountWorker, test } from 'orca/testing'
+import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import { EXCLUSIONS_KEY } from './exclusions'
 import { HIDDEN_AGENTS_KEY } from './hidden-agents'
 import type { InventoryDeps } from './inventory'
@@ -74,7 +74,7 @@ type Setup = {
 type SetupOptions = {
   storage?: NonNullable<Parameters<typeof mockHost>[0]>['storage']
   /** Agents des sessions que `agent.listSessions` rend (défaut : l'historique de Romain ; `[]` : historique vide). */
-  history?: readonly string[]
+  history?: readonly string[] | null
   /** Identifiants skills.sh que la bibliothèque détecte (défaut : aucun). */
   lib?: readonly string[]
   /** Dossiers de config qui existent dans le home (défaut : `.dsh`, comme chez Romain). */
@@ -94,7 +94,7 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
   const lib = fakeSkillsLib()
   const trash = fakeTrasher()
   const { deps: inventory, probe } = inventoryDeps(home, options.lib ?? [], options.dirs ?? ROMAIN_DIRS)
-  const history = options.history ?? ROMAIN_HISTORY
+  const history = options.history === undefined ? ROMAIN_HISTORY : options.history
   let rows = options.rows ? options.rows(root) : [rowOf(root)]
   let focused = 'identity:x'
   const controls: Controls = { failStorageSet: false, handlers: new Map() }
@@ -104,7 +104,11 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
       storage: options.storage,
       capabilities: options.capabilities,
       results: {
-        'agent.listSessions': () => ({ sessions: history.map((agent, index) => sessionOf(agent, index)), truncated: false }),
+        // `null` : l'hôte annonce `agent.listSessions` mais l'appel est rejeté en `unknown_method`.
+        'agent.listSessions': () => {
+          if (history === null) throw hostError('unknown_method')
+          return { sessions: history.map((agent, index) => sessionOf(agent, index)), truncated: false }
+        },
         'workspace.readContext': () => contextOf(focused),
         'workspace.list': async () => {
           await controls.beforeWorkspaceList?.()
@@ -427,6 +431,23 @@ test('denied history falls back to config dirs and keeps hidden agents hidden', 
   assert.equal(state.inventory, 'detected')
   assert.ok(setup.worker.logs.includes('history unavailable reason=capability_denied'))
   assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=dirs agents=2')))
+  await setup.worker.deactivate()
+})
+
+test('an Orca without agent.listSessions (unknown_method) falls back to config dirs', async () => {
+  const setup = await boot({ history: null, lib: ['claude-code'], dirs: [] })
+  const state = await stateOf(setup.worker)
+  assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
+  assert.ok(setup.worker.logs.includes('history unavailable reason=unknown_method'))
+  assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=dirs agents=1')))
+  await setup.worker.deactivate()
+})
+
+test('the agent ids of the history are logged, never a title', async () => {
+  const setup = await boot({ history: ['codex', 'claude', 'claude'], dirs: [] })
+  await stateOf(setup.worker)
+  assert.ok(setup.worker.logs.includes('history agents=claude,codex'), 'catalogue ids, sorted, without duplicates')
+  assert.ok(!setup.worker.logs.some((line) => line.includes('SECRET-TITLE')))
   await setup.worker.deactivate()
 })
 

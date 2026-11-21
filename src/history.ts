@@ -24,7 +24,7 @@ export async function listHistoryAgents(
     log('history unavailable reason=no-method')
     return null
   }
-  let sessions: readonly { agent: string }[]
+  let sessions: unknown
   try {
     try {
       sessions = (await call('agent.listSessions', { limit: HISTORY_LIMIT })).sessions
@@ -37,7 +37,12 @@ export async function listHistoryAgents(
     log(`history unavailable reason=${codeOf(error)}`)
     return null
   }
+  // Une réponse mal formée (pas de liste, une entrée nulle) vaut un historique indisponible : les dossiers de config décident.
+  if (!Array.isArray(sessions) || sessions.some((session) => typeof session !== 'object' || session === null)) {
+    log('history unavailable reason=malformed')
+    return null
+  }
   const agents = new Set<string>()
-  for (const session of sessions) if (typeof session.agent === 'string') agents.add(session.agent)
+  for (const session of sessions as { agent?: unknown }[]) if (typeof session.agent === 'string') agents.add(session.agent)
   return agents.size === 0 ? null : agents
 }

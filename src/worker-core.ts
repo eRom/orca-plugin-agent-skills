@@ -150,7 +150,13 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
 
   function probe(): Promise<Inventory> {
     const log = (line: string) => orca.log(line)
-    const run: Promise<Inventory> = detectAgents(deps.inventory, deps.home, () => listHistoryAgents(hostCall, (method) => orca.host.has(method), log), log)
+    const readHistory = async () => {
+      const seen = await listHistoryAgents(hostCall, (method) => orca.host.has(method), log)
+      // Les seuls identifiants du catalogue, triés : jamais un titre de session.
+      if (seen) log(`history agents=${[...seen].filter((id) => agentById(id) !== undefined).sort().join(',')}`)
+      return seen
+    }
+    const run: Promise<Inventory> = detectAgents(deps.inventory, deps.home, readHistory, log)
       .then((next) => {
         inventory = next
         orca.log(`inventory source=${next.source} agents=${next.agents.length}`)

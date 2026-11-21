@@ -21321,6 +21321,10 @@ async function listHistoryAgents(call, has, log2) {
     log2(`history unavailable reason=${codeOf(error)}`);
     return null;
   }
+  if (!Array.isArray(sessions) || sessions.some((session) => typeof session !== "object" || session === null)) {
+    log2("history unavailable reason=malformed");
+    return null;
+  }
   const agents2 = new Set;
   for (const session of sessions)
     if (typeof session.agent === "string")
@@ -22134,7 +22138,13 @@ async function activateWith(orca, deps) {
   let stateTicket = 0;
   function probe() {
     const log2 = (line) => orca.log(line);
-    const run = detectAgents2(deps.inventory, deps.home, () => listHistoryAgents(hostCall, (method) => orca.host.has(method), log2), log2).then((next) => {
+    const readHistory = async () => {
+      const seen = await listHistoryAgents(hostCall, (method) => orca.host.has(method), log2);
+      if (seen)
+        log2(`history agents=${[...seen].filter((id) => agentById(id) !== undefined).sort().join(",")}`);
+      return seen;
+    };
+    const run = detectAgents2(deps.inventory, deps.home, readHistory, log2).then((next) => {
       inventory = next;
       orca.log(`inventory source=${next.source} agents=${next.agents.length}`);
       return next;

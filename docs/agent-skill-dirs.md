@@ -67,8 +67,10 @@ Research of 2026-11-21, primary sources only (official docs, the agent's own rep
 directories in the user's home, for the Orca agents that skills.sh does not know (the `skills` library detects the
 others). A directory counts only when a primary source says the agent creates or reads it; no source means no
 signal. `src/agents.ts` encodes this table (`configDirs`). Re-check before each release. A relocated home
-(`XDG_CONFIG_HOME`, `DSH_HOME`, `JCODE_HOME`, `MIMOCODE_HOME`, `PRIME_AGENT_CODING_AGENT_DIR`, `ANTE_HOME`) is not
-followed: such a user falls back on Orca's history.
+(`XDG_CONFIG_HOME`, `DSH_HOME`, `JCODE_HOME`, `MIMOCODE_HOME`, `PRIME_AGENT_CODING_AGENT_DIR`, `ANTE_HOME`,
+`PI_CONFIG_DIR` for OMP) is not followed: such a user falls back on Orca's history. Source for `PI_CONFIG_DIR`
+(fetched 2026-11-21): can1357/oh-my-pi `packages/utils/src/dirs.ts`, `getConfigDirName()` returns
+`process.env.PI_CONFIG_DIR || ".omp"` (`CONFIG_DIR_NAME`), and the config root is `~/<that name>`.
 
 | Orca agent | Home directory (signal) | Source (2026-11-21) |
 |---|---|---|

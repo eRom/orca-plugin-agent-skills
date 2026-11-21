@@ -8,7 +8,7 @@
 
 ![The Skills panel: each skill of the project with the agents that read it, a warning for the agents it is missing for, beside a skills.sh search](media/cover.png)
 
-Every coding agent reads project skills from its own folder: `.claude/skills` for Claude, `.agents/skills` for Codex, Pi, Antigravity and DeepSeek Harness, `.grok/skills` for Grok, and so on. Adding a skill by hand means copying it into the right folders, and nothing tells you which agent is blind to it. Agent Skills adds a **Skills** panel that follows the focused workspace, lists the skills of the project and shows, per skill, which of the agents installed on your computer can see it.
+Every coding agent reads project skills from its own folder: `.claude/skills` for Claude, `.agents/skills` for Codex, Pi, Antigravity and DeepSeek Harness, `.grok/skills` for Grok, and so on. Adding a skill by hand means copying it into the right folders, and nothing tells you which agent is blind to it. Agent Skills adds a **Skills** panel that follows the focused workspace, lists the skills of the project and shows, per skill, which of your agents can see it (the ones Orca's history has seen, plus those whose config folder exists, see [Which agents appear](#platforms)).
 
 ## Install
 
@@ -20,9 +20,9 @@ Orca shows the access the plugin asks for (see [What it can access](#what-it-can
 
 ## Features
 
-- **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`) and it offers to add from that folder. The folder button opens the macOS picker; on Linux and Windows there is no folder button, paste the path.
+- **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`; on Windows also a drive path such as `C:\...`, and `.\`, `..\` or `~\`) and it offers to add from that folder. The folder button opens the macOS picker; on Linux and Windows there is no folder button, paste the path.
 - **One icon per active agent on each skill**: full when the agent sees the skill, faded when it does not. An agent you removed the skill for on purpose has no icon: the row says "Excluded for X". The icons only display, every gesture is a button in the row.
-- **Choose your agents**: the plugin detects the agents installed on your computer. The agent button in the panel header lists them, each with a switch: a hidden agent loses its icons and an addition no longer writes for it, in every project (a folder that another active agent reads is still written). The last visible agent cannot be hidden.
+- **Choose your agents**: the plugin detects your agents: those Orca's history has seen, plus those whose config folder exists. The agent button in the panel header lists them, each with a switch: a hidden agent loses its icons and an addition no longer writes for it, in every project (a folder that another active agent reads is still written). The last visible agent cannot be hidden.
 - **Propagate**: when an active agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
 - **Add** from a skills.sh result or a local folder (a pasted path, or the folder button). A typed `owner/repo` is a search, not an add: pick the result you want. A source holding several skills opens a checklist, everything ticked by default.
 - **Remove** a skill for every agent, or **remove here** from one folder (an expanded row lists the folders that carry a copy and the agents each one feeds). The confirmation names the agents that lose the skill and those that still see it through another folder. An agent that lost a skill this way is remembered as excluded for that skill (see [Exclusions](#exclusions)).
@@ -56,7 +56,7 @@ Removing a skill from one folder marks the agents that fed on it as **excluded**
 - A skill that is a **link to another copy of the project** (`.claude/skills/x -> ../../.agents/skills/x`, the form the `skills` CLI creates in its default mode) is the same copy as its target, never a divergence.
 - A skill that is a **link to outside the project** is marked as an external link. Its content is never written nor trashed: removing it moves only the link.
 - A skills folder whose real path **leaves the workspace** (for example `.claude -> ~/.claude`) is refused with a red banner: no write, no removal in it.
-- **Nothing is deleted for good.** Before any removal or overwrite, each distinct version goes to the system Trash (`/usr/bin/trash` on macOS, `gio trash` on Linux), and without a verified Trash the destructive gestures are refused with a message (see [Platforms](#platforms)).
+- **Nothing is deleted for good.** Before any removal or overwrite, each distinct version goes to the system Trash (`/usr/bin/trash` on macOS 15 and later; on older macOS the destructive gestures are refused), and without a verified Trash the destructive gestures are refused with a message (see [Platforms](#platforms)).
 - Every guard is computed on the disk read at the moment of the gesture, never on the list in memory.
 
 ## What it can access
@@ -72,7 +72,7 @@ Orca labels this plugin **Full access**: it runs its own worker process on your 
 Beyond Orca's API, the worker:
 
 - **never reads** Orca's own files: the agents come from Orca's session history (the capability above), then from the config folders listed under [Platforms](#platforms), the choices from the plugin's storage.
-- **runs** `/usr/bin/osascript` for the folder picker and `/usr/bin/trash` for the Trash on macOS, and `gio trash` on Linux. It starts no shell to detect agents.
+- **runs** `/usr/bin/osascript` for the folder picker and `/usr/bin/trash` for the Trash on macOS (shipped with macOS 15 and later). Linux will use `gio trash` once verified; today removing is refused there. It starts no shell to detect agents.
 - **writes** only in the project's managed folders listed above and in `skills-lock.json` at its root.
 - **makes network requests** to skills.sh for the search (`GET https://skills.sh/api/search`), and, through the [`skills`](https://github.com/vercel-labs/skills) library, to the git host of a repository you add from.
 
@@ -86,13 +86,13 @@ Since 0.2 the plugin runs on macOS, Linux and Windows. What differs:
 
 | | Trash (removing, replacing) | Folder button |
 | --- | --- | --- |
-| **macOS** | Verified: `/usr/bin/trash`. | Opens the macOS picker. |
+| **macOS** | Verified: `/usr/bin/trash`, shipped with macOS 15 and later (on older macOS, removing and replacing are refused). | Opens the macOS picker. |
 | **Linux** | Experimental: `gio trash` is wired but not verified yet, so removing is unavailable until the Trash is verified. Adding works. | None: paste a path. |
-| **Windows** | Adding works, removing and replacing are not available yet. | None: paste a path. |
+| **Windows** | Experimental, not yet played on a real Windows machine. Adding works, removing and replacing are not available yet. | None: paste a path. |
 
 Without a verified Trash the plugin refuses every gesture that would delete or overwrite, because nothing is ever deleted for good.
 
-**WSL and network workspaces** on Windows (`\\wsl$\...`, `\\server\share\...`) are not supported: the panel says so and offers no gesture.
+**WSL and network workspaces** on Windows: a raw Linux path received on Windows (a WSL distribution's root) is not supported, the panel says so and offers no gesture. A UNC workspace (`\\wsl$\...`, `\\server\share\...`) works for reading, adding and propagating; only the destructive gestures (remove, replace, keep this version) are refused, because there is no Trash on a network path.
 
 **Which agents appear.** The plugin first asks Orca's session history which agents you used: an agent shows up after its first session in Orca. For agents the history cannot tell, it falls back to the config folder each agent creates in your home. A config folder moved elsewhere (`PI_CONFIG_DIR` for OMP, `DSH_HOME`, `XDG_CONFIG_HOME`...) is not followed: those users still get the agent once it appears in Orca's history.
 
@@ -105,7 +105,7 @@ Two agents have no config folder the plugin can check, and are not offered until
 
 - **Orca 1.4.259 or later.**
 - **Remote workspaces** (SSH, runtime hosts) are not supported: the panel says so and offers no gesture. The home folder is refused as a project.
-- **No plugin API lists Orca's enabled agents**, so the plugin shows every agent installed on your computer, including those you turned off in Orca's Settings > Agents: hide them with the agent button. An agent installed while the panel is open shows up on ⟳.
+- **No plugin API lists Orca's enabled agents**, so the plugin cannot tell which agents you turned off in Orca's Settings > Agents: it shows the agents Orca's history has seen and those whose config folder exists, and you hide the ones you do not want with the agent button. An agent that has a session in Orca while the panel is open shows up on ⟳; one detected by its config folder, once that folder exists.
 - **The panel does not watch the disk.** It re-reads on open, on workspace change, after each gesture, and on ⟳.
 - **Two agents read project skills only after you approve the folder** (Hermes: `hermes skills trust`; Mistral Vibe: trusted folder). The row says so in its expanded view.
 - **No update command yet.** The lock keeps what is needed (source, type, hash); updating from the lock is planned for 1.x.
