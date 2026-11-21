@@ -8,20 +8,25 @@ import { EXCLUSIONS_KEY } from './exclusions'
 import { HIDDEN_AGENTS_KEY } from './hidden-agents'
 import type { InventoryDeps } from './inventory'
 import type { OpFinished, OpRequest, PanelState } from './protocol'
-import { fakeSkillsLib, fakeTrasher, tempDir, writeSkill, type FakeSkillsLib, type FakeTrasher } from './test-fixtures'
+import { fakeSkillsLib, fakeTrasher, sessionOf, tempDir, writeSkill, type FakeSkillsLib, type FakeTrasher } from './test-fixtures'
 import { activateWith, deactivate, type WorkerDeps } from './worker-core'
 
-/** Commandes des agents de Romain : Claude, Codex, Grok, OpenCode, Pi, Antigravity, DeepSeek Harness. */
-const ROMAIN_COMMANDS = ['claude', 'codex', 'grok', 'opencode', 'pi', 'agy', 'dsh-tui', 'dsh']
+/** Historique réel de Romain (Orca 1.4.268, 2026-11-21, `limit: 200`) : les agents des sessions rendues. */
+const ROMAIN_HISTORY = ['antigravity', 'claude', 'codex', 'grok', 'omp', 'opencode2', 'pi']
+/** DeepSeek Harness n'est pas dans l'historique d'Orca : il vient de son dossier de config. */
+const ROMAIN_DIRS = ['.dsh']
 type Probe = { calls: number }
 
-function inventoryDeps(found: readonly string[] = ROMAIN_COMMANDS): { deps: InventoryDeps; probe: Probe } {
+/** `libAgents` factice (compté) et `exists` factice : seuls les dossiers de `dirs` existent, sous `home`. */
+function inventoryDeps(home: string, lib: readonly string[], dirs: readonly string[]): { deps: InventoryDeps; probe: Probe } {
   const probe: Probe = { calls: 0 }
+  const existing = new Set(dirs.map((dir) => join(home, dir)))
   const deps: InventoryDeps = {
-    findCommands: async () => {
+    libAgents: async () => {
       probe.calls++
-      return new Set(found)
+      return new Set(lib)
     },
+    exists: (path) => existing.has(path),
     now: () => Date.now() + clockSkew
   }
   return { deps, probe }
@@ -68,7 +73,14 @@ type Setup = {
 
 type SetupOptions = {
   storage?: NonNullable<Parameters<typeof mockHost>[0]>['storage']
-  found?: readonly string[]
+  /** Agents des sessions que `agent.listSessions` rend (défaut : l'historique de Romain ; `[]` : historique vide). */
+  history?: readonly string[]
+  /** Identifiants skills.sh que la bibliothèque détecte (défaut : aucun). */
+  lib?: readonly string[]
+  /** Dossiers de config qui existent dans le home (défaut : `.dsh`, comme chez Romain). */
+  dirs?: readonly string[]
+  /** Capacités accordées à l'hôte simulé (défaut : celles du manifeste). */
+  capabilities?: readonly string[]
   deps?: Partial<WorkerDeps>
   rows?: (root: string) => Row[]
   /** Hôte déjà monté (pour un second `mountWorker` sur le même stockage). */
@@ -81,7 +93,8 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
   const home = tempDir('worker-home')
   const lib = fakeSkillsLib()
   const trash = fakeTrasher()
-  const { deps: inventory, probe } = inventoryDeps(options.found)
+  const { deps: inventory, probe } = inventoryDeps(home, options.lib ?? [], options.dirs ?? ROMAIN_DIRS)
+  const history = options.history ?? ROMAIN_HISTORY
   let rows = options.rows ? options.rows(root) : [rowOf(root)]
   let focused = 'identity:x'
   const controls: Controls = { failStorageSet: false, handlers: new Map() }
@@ -89,7 +102,9 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
     options.host ??
     mockHost({
       storage: options.storage,
+      capabilities: options.capabilities,
       results: {
+        'agent.listSessions': () => ({ sessions: history.map((agent, index) => sessionOf(agent, index)), truncated: false }),
         'workspace.readContext': () => contextOf(focused),
         'workspace.list': async () => {
           await controls.beforeWorkspaceList?.()
@@ -108,6 +123,8 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
     searchBase: 'https://skills.test',
     home,
     tmpdir: tempDir('worker-tmp'),
+    platform: 'darwin',
+    env: {},
     ...options.deps
   }
   // L'objet `orca` du harnais est figé : on en fait une copie dont le stockage et les gestionnaires passent par `controls`.
@@ -234,7 +251,7 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false })
   assert.deepEqual(
     state.agents.map((agent) => agent.id),
-    ['claude', 'codex', 'grok', 'opencode', 'dsh', 'pi', 'antigravity']
+    ['claude', 'codex', 'grok', 'opencode2', 'dsh', 'pi', 'omp', 'antigravity']
   )
   assert.deepEqual(state.agents[0], { id: 'claude', label: 'Claude', icon: 'agent-icons/claude.png', trust: null })
   assert.equal(state.inventory, 'detected')
@@ -253,7 +270,7 @@ test('state for a focused local worktree lists its skills and Romain agents', as
 })
 
 test('trust-gated agents carry their trust marker', async () => {
-  const setup = await boot({ found: ['codex', 'hermes', 'vibe'] })
+  const setup = await boot({ history: ['codex', 'hermes'], lib: ['mistral-vibe'], dirs: [] })
   const state = await stateOf(setup.worker)
   assert.deepEqual(
     state.agents.map((agent) => [agent.id, agent.trust]),
@@ -333,16 +350,16 @@ test('an unreadable storage fails the toggle instead of forgetting the hidden ag
   await setup.worker.deactivate()
 })
 
-test('a toggle reuses the known inventory, however old, instead of probing the shell again', async () => {
+test('a toggle reuses the known inventory, however old, instead of detecting again', async () => {
   const setup = await boot()
   await stateOf(setup.worker)
   const probes = setup.probe.calls
-  // Plus vieux que le délai de 10 s : `state.get` relancerait la sonde, la bascule non.
+  // Plus vieux que le délai de 10 s : `state.get` relancerait la détection, la bascule non.
   clockSkew = 60_000
   try {
     await setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true })
     assert.equal(setup.probe.calls, probes)
-    // Témoin : une simple lecture, elle, relance bien la sonde sur un cache périmé.
+    // Témoin : une simple lecture, elle, relance bien la détection sur un cache périmé.
     await stateOf(setup.worker)
     assert.equal(setup.probe.calls, probes + 1)
   } finally {
@@ -352,7 +369,7 @@ test('a toggle reuses the known inventory, however old, instead of probing the s
 })
 
 test('refuses to hide the last visible agent', async () => {
-  const setup = await boot({ found: ['claude'] })
+  const setup = await boot({ history: ['claude'], dirs: [] })
   const state = await setup.worker.request('agents.setHidden', { agent: 'claude', hidden: true })
   assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
   assert.equal(state.inventory, 'detected')
@@ -360,8 +377,8 @@ test('refuses to hide the last visible agent', async () => {
   await setup.worker.deactivate()
 })
 
-test('falls back to .agents and .claude when no agent is detected', async () => {
-  const setup = await boot({ found: [] })
+test('nothing detected falls back to .agents and .claude', async () => {
+  const setup = await boot({ history: [], dirs: [] })
   const state = await stateOf(setup.worker)
   assert.equal(state.inventory, 'fallback')
   assert.deepEqual(state.agents, [])
@@ -371,6 +388,51 @@ test('falls back to .agents and .claude when no agent is detected', async () => 
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(setup.lib.calls.install[0]!.libAgents, ['universal', 'claude-code'])
+  await setup.worker.deactivate()
+})
+
+test('history source keeps hidden agents hidden', async () => {
+  const setup = await boot({ storage: { [HIDDEN_AGENTS_KEY]: ['grok'] } })
+  const state = await stateOf(setup.worker)
+  assert.equal(state.detected.find((agent) => agent.id === 'grok')?.hidden, true)
+  assert.ok(!state.agents.some((agent) => agent.id === 'grok'))
+  assert.ok(state.agents.some((agent) => agent.id === 'claude'))
+  assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=history agents=')))
+  await setup.worker.deactivate()
+})
+
+test('the agents of the history and the config dirs of the others are all detected', async () => {
+  const setup = await boot()
+  const state = await stateOf(setup.worker)
+  assert.deepEqual(
+    state.detected.map((agent) => agent.id),
+    ['claude', 'codex', 'grok', 'opencode2', 'dsh', 'pi', 'omp', 'antigravity']
+  )
+  assert.ok(!setup.worker.logs.some((line) => line.includes('SECRET-TITLE')), 'no session title is logged')
+  await setup.worker.deactivate()
+})
+
+test('denied history falls back to config dirs and keeps hidden agents hidden', async () => {
+  const setup = await boot({
+    capabilities: ['workspace:read', 'storage:own'],
+    storage: { [HIDDEN_AGENTS_KEY]: ['codex'] },
+    lib: ['claude-code', 'codex'],
+    dirs: []
+  })
+  const state = await stateOf(setup.worker)
+  assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
+  assert.equal(state.detected.find((agent) => agent.id === 'codex')?.hidden, true)
+  assert.equal(state.inventory, 'detected')
+  assert.ok(setup.worker.logs.includes('history unavailable reason=capability_denied'))
+  assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=dirs agents=2')))
+  await setup.worker.deactivate()
+})
+
+test('startup logs which environment variables arrived', async () => {
+  const setup = await boot({ deps: { env: { HOME: 'x', APPDATA: undefined, SECRET_TOKEN: 'never-logged' } } })
+  await stateOf(setup.worker)
+  assert.ok(setup.worker.logs.includes('env present=HOME'))
+  assert.ok(!setup.worker.logs.some((line) => line.includes('never-logged') || line.includes('SECRET_TOKEN')))
   await setup.worker.deactivate()
 })
 

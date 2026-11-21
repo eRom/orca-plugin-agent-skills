@@ -9,6 +9,7 @@ import type { JsonValue, OrcaWorkerApi } from 'orca/worker'
 import { agentById } from './agents'
 import { EXCLUSIONS_KEY, exclude, excludedOf, include, parseExclusions, type Exclusions } from './exclusions'
 import { HIDDEN_AGENTS_KEY, parseHiddenAgents, setHidden } from './hidden-agents'
+import { listHistoryAgents } from './history'
 import { detectAgents, type Inventory, type InventoryDeps } from './inventory'
 import { addSkills, keepVersion, propagate, removeFromDir, removeSkill, type OpContext, type OpError, type OpResult } from './operations'
 import { abbreviateHome, isInside, resolveInputPath } from './paths'
@@ -33,7 +34,14 @@ export type WorkerDeps = {
   searchBase: string
   home: string
   tmpdir: string
+  /** `process.platform` dans le worker réel. */
+  platform: string
+  /** `process.env` dans le worker réel : on n'en lit que la présence de quelques noms, pour le journal. */
+  env: Readonly<Record<string, string | undefined>>
 }
+
+/** Variables d'environnement dont la présence aide à diagnostiquer un home ou une config déplacés. */
+const ENV_NAMES = ['HOME', 'USERPROFILE', 'APPDATA', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME']
 
 /** Âge maximal d'un inventaire servi par `state.get` sans nouvelle sonde. */
 const INVENTORY_TTL_MS = 10_000
@@ -118,9 +126,11 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
   // --- Inventaire des agents (même cache de 10 s qu'Agent Profiles) ---
 
   function probe(): Promise<Inventory> {
-    const run: Promise<Inventory> = detectAgents(deps.inventory, () => orca.log('shell probe failed, PATH fallback'))
-      .then(({ inventory: next }) => {
+    const log = (line: string) => orca.log(line)
+    const run: Promise<Inventory> = detectAgents(deps.inventory, deps.home, () => listHistoryAgents(hostCall, (method) => orca.host.has(method), log), log)
+      .then((next) => {
         inventory = next
+        orca.log(`inventory source=${next.source} agents=${next.agents.length}`)
         return next
       })
       .finally(() => {
@@ -155,7 +165,11 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     return { installed, hidden, active, fallback: false, writeDirs: writeSet(active) }
   }
 
-  // Au démarrage, sans bloquer l'activation : le premier état attend déjà la sonde en cours.
+  // Les noms seuls des variables d'environnement utiles à la détection, jamais leurs valeurs (diagnostic multi-OS).
+  const present = ENV_NAMES.filter((name) => deps.env[name] !== undefined)
+  orca.log(`env present=${present.length > 0 ? present.join(',') : 'none'}`)
+
+  // Au démarrage, sans bloquer l'activation : le premier état attend déjà la détection en cours.
   listInventory(false).catch((error: unknown) => orca.log(`inventory failed: ${messageOf(error)}`))
 
   // --- Stockage : une seule file pour toute écriture ---

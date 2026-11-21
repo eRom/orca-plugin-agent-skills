@@ -35,7 +35,7 @@
   "execution": "trusted-worker",
   "pluginApi": 1,
   "main": "dist/worker.mjs",
-  "capabilities": [{ "kind": "workspace:read" }, { "kind": "storage:own" }],
+  "capabilities": [{ "kind": "workspace:read" }, { "kind": "storage:own" }, { "kind": "history:read" }],
   "contributes": {
     "panels": [{ "id": "skills", "title": "Skills", "icon": "puzzle", "entry": "src/panel.tsx", "ui": "components" }],
     "events": [{ "on": "workspace.changed" }]

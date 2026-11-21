@@ -57,3 +57,30 @@ Writing: the `skills` library writes `.agents/skills` (`universal`), `.claude/sk
 (`grok`), `.kiro/skills` (`kiro-cli`), `.qoder/skills` (`qoder`), `.codebuddy/skills` (`codebuddy`), `.zcode/skills`
 (`zcode`), `.trae/skills` (`trae`). The plugin copies files itself into `.openclaude/skills` and `.prime/agent/skills`,
 which the library does not know.
+
+## Config directories used for detection
+
+Research of 2026-11-21, primary sources only (official docs, the agent's own repository). Detection looks for these
+directories in the user's home, for the Orca agents that skills.sh does not know (the `skills` library detects the
+others). A directory counts only when a primary source says the agent creates or reads it; no source means no
+signal. `src/agents.ts` encodes this table (`configDirs`). Re-check before each release. A relocated home
+(`XDG_CONFIG_HOME`, `DSH_HOME`, `JCODE_HOME`, `MIMOCODE_HOME`, `PRIME_AGENT_CODING_AGENT_DIR`, `ANTE_HOME`) is not
+followed: such a user falls back on Orca's history.
+
+| Orca agent | Home directory (signal) | Source (2026-11-21) |
+|---|---|---|
+| openclaude | `.openclaude` | Twigpine/openclaude `docs/skills.md`: user settings `~/.openclaude/settings.json`, user skills `~/.openclaude/skills` |
+| opencode2 | none | opencode.ai/v2/docs/cli/config: `~/.config/opencode/cli.json`, the directory OpenCode already uses, so it carries no v2-only signal; the agent is seen through Orca's history only |
+| mimo-code | `.config/mimocode` | XiaomiMiMo/MiMo-Code README, File Locations table: `~/.config/mimocode/mimocode.jsonc`, `tui.json`, personal skills `~/.config/mimocode/skills/` (Windows: `%LOCALAPPDATA%\mimocode`, not covered) |
+| ante | `.ante` | docs.antigma.ai/extend/skills: user-level skills in `~/.ante/skills/` |
+| muse | none | no primary source found (Meta's docs name no home directory; `~/.config/muse` appears only in a third-party blog) |
+| dsh | `.dsh` | deepseek-ai/deepseek-harness `packages/util/home-paths` (`README.md` and `src/index.ts`: `DSH_HOME_DIR_NAME = '.dsh'`, default home `~/.dsh`) |
+| omp | `.omp` | can1357/oh-my-pi `packages/utils/src/dirs.ts`: `CONFIG_DIR_NAME = '.omp'`, config root `~/.omp`, agent directory `~/.omp/agent` |
+| prime-agent | `.prime/agent` | PrimeIntellect-ai/prime-agent `crates/pa-types/src/platform/dirs.rs`: `CONFIG_DIR_NAME = ".prime/agent"`, `agent_dir()` is `<home>/.prime/agent` |
+| codebuff | `.config/manicode` | CodebuffAI/codebuff `cli/src/utils/config-dir.ts` and `sdk/src/credentials.ts`: `os.homedir()/.config/manicode` |
+| freebuff | `.config/manicode` | same CLI source as Codebuff (`FREEBUFF_CONFIG_DIR` only overrides it): the two share this directory, so it cannot tell them apart |
+| jcode | `.jcode` | 1jehuang/jcode `crates/jcode-storage/src/lib.rs`: `jcode_dir()` is `JCODE_HOME` or `<home>/.jcode` |
+
+Agents with no signal at all and no skills.sh identifier (`UNDETECTED_AGENTS` in `src/agents.ts`): opencode2 and muse.
+Both are in Orca's history list, so they appear once the user has run them in Orca. Local check on Romain's Mac
+(2026-11-21): `~/.dsh`, `~/.omp` and `~/.config/opencode` exist.
