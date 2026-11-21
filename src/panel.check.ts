@@ -1,6 +1,7 @@
 // `orca plugin check` dessine le panneau une fois par scénario, en sombre puis en clair ; le worker est remplacé par un état figé.
 import { defineCheck } from 'orca/testing'
 import type { AgentView, PanelState } from './protocol'
+import type { CopyKind } from './scan'
 import type { ManagedDir } from './skill-dirs'
 import type { SkillRow } from './visibility'
 
@@ -43,8 +44,9 @@ function row(folder: string, description: string, source: SkillRow['source'], co
     source,
     agents,
     missingFor: agents.filter((a) => a.state === 'absent').map((a) => a.agent),
+    external: false,
     versions: hashes.map((hash) => ({ hash, dirs: copies.filter(([, each]) => each === hash).map(([dir]) => dir) })),
-    copies: copies.map(([dir]) => ({ dir, feeds: READERS[dir] }))
+    copies: copies.map(([dir]) => ({ dir, kind: 'dir' as CopyKind, feeds: READERS[dir] }))
   }
 }
 

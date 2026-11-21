@@ -77,6 +77,16 @@ function renderSource(row: SkillRow, m: Messages) {
   }
 }
 
+/** La mention « lien externe », sous la source de la ligne repliée. */
+function renderExternalTag(row: SkillRow, m: Messages) {
+  if (!row.external) return null
+  return (
+    <Text key={`external-${row.folder}`} muted size="xs">
+      {m.externalLink}
+    </Text>
+  )
+}
+
 /** Une pastille par agent actif : pleine s'il voit la skill, estompée sinon. */
 function renderChips(row: SkillRow, ctx: RowContext) {
   const { state, m } = ctx
@@ -179,7 +189,14 @@ function renderVersions(row: SkillRow, ctx: RowContext) {
             </Text>
             <Box key={`version-dirs-${row.folder}-${version.hash}`} direction="row" wrap gap="xs">
               {version.dirs.map((dir) => (
-                <Code key={dir}>{dir}</Code>
+                <Box key={dir} direction="row" align="center" gap="xs">
+                  <Code>{dir}</Code>
+                  {row.copies.find((copy) => copy.dir === dir)?.kind === 'external-link' ? (
+                    <Text muted size="xs">
+                      {m.externalLink}
+                    </Text>
+                  ) : null}
+                </Box>
               ))}
             </Box>
             <Text muted size="xs">
@@ -238,6 +255,7 @@ export function renderRow(row: SkillRow, ctx: RowContext) {
             {row.displayName}
           </Text>
           {renderSource(row, m)}
+          {renderExternalTag(row, m)}
         </Box>
         <Box key={`actions-${row.folder}`} direction="row" gap="xs" shrink={false}>
           <IconButton

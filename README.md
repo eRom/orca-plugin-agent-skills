@@ -21,7 +21,7 @@ Orca shows the access the plugin asks for (see [What it can access](#what-it-can
 ## Features
 
 - **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`; on Windows also a drive path such as `C:\...`, and `.\`, `..\` or `~\`) and it offers to add from that folder. The folder button opens the macOS picker; on Linux and Windows there is no folder button, paste the path.
-- **One icon per active agent on each skill**: full when the agent sees the skill, faded when it does not. Hover an icon to see which folder gives the agent the skill. The icons only display.
+- **One icon per active agent on each skill**: full when the agent sees the skill, faded when it does not. The icons only display.
 - **Choose your agents**: the plugin detects your agents: those Orca's history has seen, plus those whose config folder exists. The agent button in the panel header lists them, each with a switch: a hidden agent loses its icons and an addition no longer writes for it, in every project (a folder that another active agent reads is still written). The last visible agent cannot be hidden.
 - **Propagate**: when an active agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads.
 - **Add** from a skills.sh result or a local folder (a pasted path, or the folder button). A typed `owner/repo` is a search, not an add: pick the result you want. A source holding several skills opens a checklist, everything ticked by default.

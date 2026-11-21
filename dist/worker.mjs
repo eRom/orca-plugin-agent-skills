@@ -21922,8 +21922,9 @@ function buildRow(disk, source, active) {
     source,
     agents: agents2,
     missingFor: agents2.filter((a2) => a2.state === "absent").map((a2) => a2.agent),
+    external: copies.some((copy) => copy.kind === "external-link"),
     versions: versionsOf(copies),
-    copies: copies.map((copy) => ({ dir: copy.dir, feeds: readers(copy.dir, active) }))
+    copies: copies.map((copy) => ({ dir: copy.dir, kind: copy.kind, feeds: readers(copy.dir, active) }))
   };
 }
 function buildRows(scan, lock, active, home2, pathApi = nodePath2) {

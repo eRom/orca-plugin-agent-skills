@@ -594,6 +594,26 @@ const SPREAD = [
   diskSkill('motion-context', [copyOf('.claude/skills', 'motion-context')], 'Context for motion work')
 ]
 
+test('the chips carry the agent and the folder that gives it the skill as their alt text', async () => {
+  // Orca n'a pas d'infobulle sur une image : le `alt` est le seul porteur de l'information « par quel dossier ».
+  const { view } = await open({ state: stateOf({ skills: [HANDWRITTEN] }) })
+  const alts = view.findAll({ type: 'Image' }).map((image) => String(image.props.alt))
+  assert.ok(alts.includes(FR.agentSees('Claude', '.claude/skills')), 'an agent that sees the skill names its folder')
+  assert.ok(alts.includes(FR.agentAbsent('Grok')), 'an absent agent says so')
+  await expectClean(view)
+})
+
+test('a skill that is a link to outside the project carries the external link tag, even folded', async () => {
+  const external: SkillCopy = { dir: '.grok/skills', path: `${ROOT}/.grok/skills/x`, kind: 'external-link', realPath: '/elsewhere/x', hash: 'h2' }
+  const linked = diskSkill('x', [copyOf('.agents/skills', 'x', 'h1'), external])
+  const { view } = await open({ state: stateOf({ skills: [linked, HANDWRITTEN] }) })
+  assert.equal(view.findAll({ text: FR.externalLink }).length, 1, 'only the row with an external link, folded')
+  await view.press({ label: FR.expandLabel('x') })
+  // Les versions divergent (contenu du lien externe différent) : le dossier du lien porte aussi la mention.
+  assert.equal(view.findAll({ text: FR.externalLink }).length, 2)
+  await expectClean(view)
+})
+
 test('the expanded row of a skill in two identical dirs shows its description and no gesture of its own', async () => {
   // Un seul retrait existe : l'icône corbeille de la ligne. Le détail ne porte ni dossier, ni « Retirer d'ici », ni « Ajouter pour ».
   const { view } = await open({ state: stateOf({ skills: [SPREAD[0]!] }) })
@@ -799,7 +819,7 @@ test('warnings of a gesture are shown under the row', async () => {
     opId: 'op-1',
     op: { kind: 'propagate', folder: 'motion-context', agents: ['codex'] },
     ok: true,
-    warnings: [{ code: 'PLUGIN_UNSAFE_DIR', message: 'disk full' }]
+    warnings: [{ code: 'PLUGIN_UNSAFE_DIR', message: '.grok/skills resolves outside this project' }]
   })
   assert.notEqual(view.find({ type: 'Callout', text: new RegExp(FR.lib.PLUGIN_UNSAFE_DIR) }), null)
   await expectClean(view)

@@ -162,3 +162,18 @@ test('rows keep the order of the scan', () => {
     ['alpha', 'beta']
   )
 })
+
+test('a skill is flagged external only when one of its copies is a link to outside the project', () => {
+  const external = copy('.claude/skills', 'alpha', 'h9', 'external-link', '/elsewhere/alpha')
+  const target = copy('.agents/skills', 'alpha', 'h1')
+  const internal = copy('.grok/skills', 'alpha', 'h1', 'internal-link', target.realPath)
+  const rows = buildRows(scanOf(skill('alpha', [target, external]), skill('beta', [target, internal])), NO_LOCK, ROMAIN_AGENTS, HOME)
+  assert.deepEqual(
+    rows.map((row) => [row.folder, row.external]),
+    [
+      ['alpha', true],
+      ['beta', false]
+    ]
+  )
+  assert.equal(rows[0]!.copies.find((c) => c.dir === '.claude/skills')!.kind, 'external-link')
+})

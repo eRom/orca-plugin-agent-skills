@@ -38,6 +38,7 @@ export type Messages = {
   emptyTitle: string
   emptyHint: string
   handwritten: string
+  externalLink: string
   absentFor: (agents: string) => string
   propagate: string
   removeSkillLabel: (name: string) => string
@@ -162,6 +163,7 @@ const en: Messages = {
   emptyTitle: 'No skill in this project.',
   emptyHint: 'Search skills.sh or paste the path of a folder.',
   handwritten: 'handwritten',
+  externalLink: 'external link',
   absentFor: (agents) => `Missing for ${agents}`,
   propagate: 'Propagate',
   removeSkillLabel: (name) => `Remove ${name}`,
@@ -280,6 +282,7 @@ const fr: Messages = {
   emptyTitle: 'Aucune skill dans ce projet.',
   emptyHint: "Cherchez sur skills.sh ou collez le chemin d'un dossier.",
   handwritten: 'écrite à la main',
+  externalLink: 'lien externe',
   absentFor: (agents) => `Absente pour ${agents}`,
   propagate: 'Propager',
   removeSkillLabel: (name) => `Retirer ${name}`,

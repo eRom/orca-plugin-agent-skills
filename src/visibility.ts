@@ -1,7 +1,7 @@
 // Modèle de visibilité : pour chaque skill du disque, ce que chaque agent actif en voit. Pur, sans accès disque.
 import * as nodePath from 'node:path'
 import { abbreviateHome, type PathApi } from './paths'
-import type { DiskSkill, ScanResult, SkillCopy } from './scan'
+import type { CopyKind, DiskSkill, ScanResult, SkillCopy } from './scan'
 import { MANAGED_DIRS, readers, skillCapable, type ManagedDir } from './skill-dirs'
 
 /** Entrée du lock du projet pour une skill (clé de la map : le nom de dossier de la skill). */
@@ -15,8 +15,8 @@ export type AgentState = { agent: string; state: 'sees' | 'absent'; via: Managed
 /** Un contenu distinct de la skill et les dossiers qui le portent. */
 export type SkillVersion = { hash: string; dirs: ManagedDir[] }
 
-/** `feeds` : agents actifs qui lisent ce dossier. */
-export type DirCopyView = { dir: ManagedDir; feeds: string[] }
+/** `feeds` : agents actifs qui lisent ce dossier. `kind` : vrai dossier, lien interne ou lien vers l'extérieur du projet. */
+export type DirCopyView = { dir: ManagedDir; kind: CopyKind; feeds: string[] }
 
 export type SkillRow = {
   folder: string
@@ -25,6 +25,8 @@ export type SkillRow = {
   source: SourceLabel
   agents: AgentState[]
   missingFor: string[]
+  /** Vrai si une copie est un lien vers l'extérieur du projet (spec v0.1 §5.10). */
+  external: boolean
   versions: SkillVersion[]
   copies: DirCopyView[]
 }
@@ -73,8 +75,9 @@ function buildRow(disk: DiskSkill, source: SourceLabel, active: readonly string[
     source,
     agents,
     missingFor: agents.filter((a) => a.state === 'absent').map((a) => a.agent),
+    external: copies.some((copy) => copy.kind === 'external-link'),
     versions: versionsOf(copies),
-    copies: copies.map((copy) => ({ dir: copy.dir, feeds: readers(copy.dir, active) }))
+    copies: copies.map((copy) => ({ dir: copy.dir, kind: copy.kind, feeds: readers(copy.dir, active) }))
   }
 }
 
