@@ -112,7 +112,16 @@ function reusingTrial(lib: SkillsLib, trial: Stage): SkillsLib {
 
 export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promise<void> {
   const hostCall = orca.host.call.bind(orca.host) as unknown as HostCall
-  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, (line) => orca.log(line))
+  // `resolveWorkspace` tourne à chaque lecture d'état : la forme de la racine n'est journalisée que quand elle change.
+  let lastShapeLine = ''
+  const focusedWorkspace = () =>
+    resolveWorkspace(hostCall, deps.home, deps.platform, (line) => {
+      if (line.startsWith('workspace root shape=')) {
+        if (line === lastShapeLine) return
+        lastShapeLine = line
+      }
+      orca.log(line)
+    })
   let inventory: Inventory | null = null
   let probing: Promise<Inventory> | null = null
   let writing: Promise<unknown> = Promise.resolve()

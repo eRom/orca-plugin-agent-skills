@@ -248,7 +248,7 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   writeSkill(setup.root, '.claude/skills', 'alpha')
   writeSkill(setup.root, '.agents/skills', 'beta')
   const state = await stateOf(setup.worker)
-  assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false })
+  assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false, network: false })
   assert.deepEqual(
     state.agents.map((agent) => agent.id),
     ['claude', 'codex', 'grok', 'opencode2', 'dsh', 'pi', 'omp', 'antigravity']
@@ -1180,5 +1180,20 @@ test('a source inside a managed folder of the project is refused before it is re
   const outside = join(setup.root, 'my-skills')
   mkdirSync(outside)
   assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: outside, workspaceId: WS })).ok, true)
+  await setup.worker.deactivate()
+})
+
+test('a WSL workspace on Windows is explained, never scanned, and its shape is logged once', async () => {
+  const setup = await boot({ deps: { platform: 'win32' } })
+  setup.focus('identity:x', [rowOf('/home/r/p')])
+  const first = await stateOf(setup.worker)
+  assert.deepEqual(first.workspace, { status: 'wsl' })
+  assert.deepEqual(first.rows, [])
+  await stateOf(setup.worker)
+  assert.deepEqual(
+    setup.worker.logs.filter((line) => line.startsWith('workspace root shape=')),
+    ['workspace root shape=posix'],
+    'the shape is logged once per workspace, never with the path'
+  )
   await setup.worker.deactivate()
 })

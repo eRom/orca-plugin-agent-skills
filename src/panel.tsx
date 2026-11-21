@@ -103,6 +103,8 @@ function workspaceMessage(state: PanelState): string | null {
   switch (state.workspace.status) {
     case 'none':
       return m.noWorkspace
+    case 'wsl':
+      return m.wslWorkspace
     case 'remote':
       return m.remoteWorkspace
     case 'missing':

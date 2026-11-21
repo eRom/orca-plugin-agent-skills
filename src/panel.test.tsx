@@ -64,7 +64,7 @@ function stateOf(options: StateOptions = {}): PanelState {
     HOME
   )
   return {
-    workspace: options.workspace ?? { status: 'ready', id: 'identity:tool', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true },
+    workspace: options.workspace ?? { status: 'ready', id: 'identity:tool', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true, network: false },
     agents: agentViews(agents),
     detected: agentViews(agents).map((agent) => ({ ...agent, hidden: false })),
     inventory: 'detected',
@@ -700,7 +700,8 @@ test('workspace states show their message and nothing else', async () => {
     [{ status: 'none' }, FR.noWorkspace],
     [{ status: 'remote' }, FR.remoteWorkspace],
     [{ status: 'missing' }, FR.missingWorkspace],
-    [{ status: 'home' }, FR.homeWorkspace]
+    [{ status: 'home' }, FR.homeWorkspace],
+    [{ status: 'wsl' }, FR.wslWorkspace]
   ]
   for (const [workspace, message] of cases) {
     const { view } = await open({ state: stateOf({ workspace }) })
@@ -896,7 +897,7 @@ test('a switch of workspace drops the half-typed add', async () => {
   await view.type(SEARCH_FIELD, '~/x')
   await afterPause(view)
   assert.notEqual(view.find({ testId: 'read-path' }), null)
-  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
+  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false, network: false } }))
   assert.equal(view.find({ testId: 'read-path' }), null)
   assert.equal(view.valueOf(SEARCH_FIELD), '')
   await expectClean(view)
@@ -1064,7 +1065,7 @@ test('every request that acts on a workspace carries the id of the one the panel
   // path.check, source.preview, puis op.start (une seule skill : ajout direct).
   assert.deepEqual(log.workspaceIds, ['identity:tool', 'identity:tool', 'identity:tool'])
   // Après un changement d'espace, les demandes suivantes portent le nouvel identifiant.
-  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
+  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false, network: false } }))
   await view.type(SEARCH_FIELD, '~/y')
   await afterPause(view)
   assert.equal(log.workspaceIds.at(-1), 'identity:other')

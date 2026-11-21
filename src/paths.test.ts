@@ -43,6 +43,7 @@ test('abbreviates the home dir only on a path boundary', () => {
   assert.equal(abbreviateHome('/Users/me/dev/x', HOME), '~/dev/x')
   assert.equal(abbreviateHome('/Users/me', HOME), '~')
   assert.equal(abbreviateHome('/Users/meow/x', HOME), '/Users/meow/x')
+  assert.equal(abbreviateHome('/users/me/x', HOME), '/users/me/x', 'POSIX paths stay case-sensitive')
 })
 
 test('isInside respects path boundaries', () => {

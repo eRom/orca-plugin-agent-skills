@@ -52,6 +52,8 @@ test('the texts fixed by the spec are the French ones', () => {
   const fr = MESSAGES.fr
   assert.equal(fr.remoteWorkspace, 'Espace distant : non pris en charge.')
   assert.equal(fr.noWorkspace, 'Ouvrez un espace de travail.')
+  assert.equal(fr.wslWorkspace, "Espace WSL non pris en charge pour l'instant.")
+  assert.equal(MESSAGES.en.wslWorkspace, 'WSL workspaces are not supported yet.')
   assert.equal(fr.replaceAsk('x'), "Remplacer x ? L'actuelle part à la Corbeille.")
   assert.equal(fr.removeAsk('x'), 'Retirer x du projet ? Elle disparaît pour tous les agents. Une copie part à la Corbeille.')
   assert.equal(fr.pointsHere('.claude/skills'), ".claude/skills pointe ici : retirez-le d'abord")

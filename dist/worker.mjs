@@ -21373,6 +21373,9 @@ function abbreviateHome(path2, home2, pathApi = nodePath) {
     return `~${path2.slice(trimmed.length)}`;
   return path2;
 }
+function isNetworkPath(path2, platform2) {
+  return platform2 === "win32" && path2.startsWith("\\\\");
+}
 function isInside(child, parent) {
   const rel = nodePath.relative(parent, child);
   if (rel === "")
@@ -21999,11 +22002,20 @@ async function removeFromDir(ctx, folder, dir) {
 // src/workspace.ts
 import { lstat as lstat6, realpath as realpath5 } from "node:fs/promises";
 import { join as join8 } from "node:path";
+function classifyRoot(path2, platform2) {
+  if (isNetworkPath(path2, platform2))
+    return "unc";
+  if (/^[A-Za-z]:[\\/]/.test(path2))
+    return "drive";
+  if (path2.startsWith("/"))
+    return "posix";
+  return "other";
+}
 var isRemoteHost = (hostId) => hostId !== null && (hostId.startsWith("ssh:") || hostId.startsWith("runtime:"));
 async function isLinkedWorktree(root) {
   return (await lstat6(join8(root, ".git")).catch(() => null))?.isFile() ?? false;
 }
-async function resolveWorkspace(call, home2, log2 = () => {}) {
+async function resolveWorkspace(call, home2, platform2, log2 = () => {}, realpathFn = realpath5) {
   const context = await call("workspace.readContext", {});
   const id = context?.workspaceId;
   if (!context || !id)
@@ -22015,12 +22027,16 @@ async function resolveWorkspace(call, home2, log2 = () => {}) {
       log2("workspace not found in a truncated workspace.list, treated as none");
     return { view: { status: "none" } };
   }
+  const shape = classifyRoot(row.path, platform2);
+  log2(`workspace root shape=${shape}`);
   if (isRemoteHost(row.hostId))
     return { view: { status: "remote" } };
-  const real = await realpath5(row.path).catch(() => null);
+  if (platform2 === "win32" && shape === "posix")
+    return { view: { status: "wsl" } };
+  const real = await realpathFn(row.path).catch(() => null);
   if (real === null)
     return { view: { status: "missing" } };
-  if (real === await realpath5(home2).catch(() => home2))
+  if (real === await realpathFn(home2).catch(() => home2))
     return { view: { status: "home" } };
   return {
     root: row.path,
@@ -22030,7 +22046,8 @@ async function resolveWorkspace(call, home2, log2 = () => {}) {
       id: row.id,
       name: row.name,
       branch: row.branch ?? (context.branch === "" ? null : context.branch),
-      linkedWorktree: await isLinkedWorktree(row.path)
+      linkedWorktree: await isLinkedWorktree(row.path),
+      network: isNetworkPath(row.path, platform2)
     }
   };
 }
@@ -22084,7 +22101,15 @@ function reusingTrial(lib, trial) {
 }
 async function activateWith(orca, deps) {
   const hostCall = orca.host.call.bind(orca.host);
-  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, (line) => orca.log(line));
+  let lastShapeLine = "";
+  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, deps.platform, (line) => {
+    if (line.startsWith("workspace root shape=")) {
+      if (line === lastShapeLine)
+        return;
+      lastShapeLine = line;
+    }
+    orca.log(line);
+  });
   let inventory = null;
   let probing = null;
   let writing = Promise.resolve();

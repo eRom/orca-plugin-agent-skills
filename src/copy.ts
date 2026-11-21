@@ -10,6 +10,7 @@ export const LOCALES: readonly Locale[] = ['en', 'fr']
 export type Messages = {
   // Espace de travail.
   remoteWorkspace: string
+  wslWorkspace: string
   noWorkspace: string
   missingWorkspace: string
   homeWorkspace: string
@@ -142,6 +143,7 @@ export type Messages = {
 
 const en: Messages = {
   remoteWorkspace: 'Remote workspace: not supported.',
+  wslWorkspace: 'WSL workspaces are not supported yet.',
   noWorkspace: 'Open a workspace.',
   missingWorkspace: 'The folder of this workspace no longer exists.',
   homeWorkspace: 'The home folder is not a project.',
@@ -266,6 +268,7 @@ const en: Messages = {
 
 const fr: Messages = {
   remoteWorkspace: 'Espace distant : non pris en charge.',
+  wslWorkspace: "Espace WSL non pris en charge pour l'instant.",
   noWorkspace: 'Ouvrez un espace de travail.',
   missingWorkspace: "Le dossier de cet espace n'existe plus.",
   homeWorkspace: "Le dossier personnel n'est pas un projet.",
