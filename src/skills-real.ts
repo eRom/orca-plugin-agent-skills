@@ -9,6 +9,6 @@ export const realSkillsLib = createSkillsLib(skills)
  * la détection ne dépend pas du projet ouvert, et les signaux « de projet » de la bibliothèque ne comptent pas.
  */
 export async function realLibAgents(home: string): Promise<ReadonlySet<string>> {
-  const { agents } = await skills.detectAgents({ cwd: home })
+  const { agents } = await skills.detectAgents({ cwd: home, config: { telemetry: false } })
   return new Set(agents.map((agent) => agent.id))
 }

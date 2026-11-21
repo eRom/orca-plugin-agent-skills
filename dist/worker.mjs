@@ -21095,7 +21095,7 @@ function createSkillsLib(api) {
 // src/skills-real.ts
 var realSkillsLib = createSkillsLib(exports_dist);
 async function realLibAgents(home2) {
-  const { agents: agents2 } = await detectAgents({ cwd: home2 });
+  const { agents: agents2 } = await detectAgents({ cwd: home2, config: { telemetry: false } });
   return new Set(agents2.map((agent) => agent.id));
 }
 
@@ -21353,27 +21353,31 @@ import { copyFile, lstat as lstat3, mkdir as mkdir2, readdir as readdir3, readFi
 import { dirname as dirname2, join as join5 } from "node:path";
 
 // src/paths.ts
-import { isAbsolute as isAbsolute2, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
-function resolveInputPath(text, root, home2) {
+import * as nodePath from "node:path";
+function resolveInputPath(text, root, home2, path2 = nodePath) {
   if (text === "~")
-    return resolve2(home2);
-  if (text.startsWith("~/"))
-    return resolve2(home2, text.slice(2));
-  return resolve2(root, text);
+    return path2.resolve(home2);
+  if (text.startsWith("~/") || path2.sep === "\\" && text.startsWith("~\\"))
+    return path2.resolve(home2, text.slice(2));
+  return path2.resolve(root, text);
 }
-function abbreviateHome(path2, home2) {
-  const base = home2.length > 1 ? home2.replace(/\/+$/, "") : home2;
-  if (path2 === base)
+function abbreviateHome(path2, home2, pathApi = nodePath) {
+  const win = pathApi.sep === "\\";
+  const trimmed = home2.length > 1 ? home2.replace(win ? /[\\/]+$/ : /\/+$/, "") : home2;
+  const norm = (value) => win ? value.replace(/\//g, "\\").toLowerCase() : value;
+  const base = norm(trimmed);
+  const subject = norm(path2);
+  if (subject === base)
     return "~";
-  if (base !== "/" && path2.startsWith(`${base}/`))
-    return `~${path2.slice(base.length)}`;
+  if (base !== pathApi.sep && subject.startsWith(`${base}${pathApi.sep}`))
+    return `~${path2.slice(trimmed.length)}`;
   return path2;
 }
 function isInside(child, parent) {
-  const rel = relative3(parent, child);
+  const rel = nodePath.relative(parent, child);
   if (rel === "")
     return true;
-  return rel !== ".." && !rel.startsWith(`..${sep3}`) && !isAbsolute2(rel);
+  return rel !== ".." && !rel.startsWith(`..${nodePath.sep}`) && !nodePath.isAbsolute(rel);
 }
 
 // src/fsops.ts
@@ -21656,11 +21660,12 @@ async function scanWorkspace(root) {
 }
 
 // src/visibility.ts
-function sourceLabel(entry, home2) {
+import * as nodePath2 from "node:path";
+function sourceLabel(entry, home2, pathApi = nodePath2) {
   if (!entry)
     return { kind: "handwritten" };
-  if (entry.source.startsWith("/"))
-    return { kind: "local", path: abbreviateHome(entry.source, home2) };
+  if (pathApi.isAbsolute(entry.source))
+    return { kind: "local", path: abbreviateHome(entry.source, home2, pathApi) };
   return { kind: "remote", source: entry.source };
 }
 var dirOrder = (copy) => MANAGED_DIRS.indexOf(copy.dir);
@@ -21707,9 +21712,9 @@ function buildRow(disk, source, active, excludedAgents) {
     }))
   };
 }
-function buildRows(scan, lock, active, exclusionsFor, home2) {
+function buildRows(scan, lock, active, exclusionsFor, home2, pathApi = nodePath2) {
   const capable = skillCapable(active);
-  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home2), capable, new Set(exclusionsFor(disk.folder))));
+  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home2, pathApi), capable, new Set(exclusionsFor(disk.folder))));
 }
 
 // src/operations.ts
@@ -22169,7 +22174,8 @@ async function activateWith(orca, deps) {
       agents: agentViews(agents2.active),
       detected: agentViews(agents2.installed).map((view) => ({ ...view, hidden: agents2.hidden.includes(view.id) })),
       inventory: agents2.fallback ? "fallback" : "detected",
-      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null }
+      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null },
+      platform: deps.platform
     };
     if (!("root" in focused))
       return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current };

@@ -170,7 +170,7 @@ function renderReady(state: PanelState) {
       {renderAddFlow(flow, busy, m)}
       {flow === null ? renderPathLine(read(pathCheck), busy, m) : null}
       {/* Ce que le champ contient décide du corps : rien, la liste du projet ; un chemin, la ligne d'ajout ci-dessus ; sinon les résultats. */}
-      {typing ? (isPathInput(text.trim()) ? null : renderResults(read(searchView), busy, flow?.status === 'loading', currentLocale(), m)) : renderList(state, ctx)}
+      {typing ? (isPathInput(text.trim(), state.platform) ? null : renderResults(read(searchView), busy, flow?.status === 'loading', currentLocale(), m)) : renderList(state, ctx)}
     </Stack>
   )
 }

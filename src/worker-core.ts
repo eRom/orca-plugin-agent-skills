@@ -227,7 +227,8 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       agents: agentViews(agents.active),
       detected: agentViews(agents.installed).map((view) => ({ ...view, hidden: agents.hidden.includes(view.id) })),
       inventory: agents.fallback ? ('fallback' as const) : ('detected' as const),
-      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null }
+      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null },
+      platform: deps.platform
     }
     if (!('root' in focused)) return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current }
 

@@ -21,6 +21,8 @@ export type PanelState = {
   unsafeDirs: ManagedDir[]
   lockUnreadable: boolean
   capabilities: { trash: boolean; folderPicker: boolean }
+  /** `process.platform` du worker : le panneau en tire les formes de chemin qu'il reconnaît dans le champ. */
+  platform: string
   busy: OpRequest | null
 }
 

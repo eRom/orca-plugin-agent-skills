@@ -265,6 +265,7 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   assert.deepEqual(state.unsafeDirs, [])
   assert.equal(state.lockUnreadable, false)
   assert.deepEqual(state.capabilities, { trash: true, folderPicker: true })
+  assert.equal(state.platform, 'darwin')
   assert.equal(state.busy, null)
   await setup.worker.deactivate()
 })

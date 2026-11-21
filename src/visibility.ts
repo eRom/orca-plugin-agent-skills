@@ -1,5 +1,6 @@
 // Modèle de visibilité : pour chaque skill du disque, ce que chaque agent actif en voit. Pur, sans accès disque.
-import { abbreviateHome } from './paths'
+import * as nodePath from 'node:path'
+import { abbreviateHome, type PathApi } from './paths'
 import type { CopyKind, DiskSkill, ScanResult, SkillCopy } from './scan'
 import { MANAGED_DIRS, readers, skillCapable, type ManagedDir } from './skill-dirs'
 
@@ -29,10 +30,10 @@ export type SkillRow = {
   copies: DirCopyView[]
 }
 
-/** Une source qui commence par `/` est un chemin local (abrégé en `~`), sinon une source distante ; sans entrée : écrite à la main. */
-export function sourceLabel(entry: LockEntry | undefined, home: string): SourceLabel {
+/** Une source absolue selon l'OS est un chemin local (abrégé en `~`), sinon une source distante ; sans entrée : écrite à la main. */
+export function sourceLabel(entry: LockEntry | undefined, home: string, pathApi: PathApi = nodePath): SourceLabel {
   if (!entry) return { kind: 'handwritten' }
-  if (entry.source.startsWith('/')) return { kind: 'local', path: abbreviateHome(entry.source, home) }
+  if (pathApi.isAbsolute(entry.source)) return { kind: 'local', path: abbreviateHome(entry.source, home, pathApi) }
   return { kind: 'remote', source: entry.source }
 }
 
@@ -104,8 +105,9 @@ export function buildRows(
   lock: ReadonlyMap<string, LockEntry>,
   active: readonly string[],
   exclusionsFor: (folder: string) => readonly string[],
-  home: string
+  home: string,
+  pathApi: PathApi = nodePath
 ): SkillRow[] {
   const capable = skillCapable(active)
-  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home), capable, new Set(exclusionsFor(disk.folder))))
+  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home, pathApi), capable, new Set(exclusionsFor(disk.folder))))
 }

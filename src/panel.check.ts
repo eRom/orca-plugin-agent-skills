@@ -74,6 +74,7 @@ function stateOf(overrides: Partial<PanelState>): PanelState {
     unsafeDirs: [],
     lockUnreadable: false,
     capabilities: { trash: true, folderPicker: true },
+    platform: 'darwin',
     busy: null,
     ...overrides
   }

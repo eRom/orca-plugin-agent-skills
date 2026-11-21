@@ -72,6 +72,7 @@ function stateOf(options: StateOptions = {}): PanelState {
     unsafeDirs: [],
     lockUnreadable: false,
     capabilities: { trash: true, folderPicker: true },
+    platform: 'darwin',
     busy: null,
     ...options.overrides
   }
@@ -379,6 +380,20 @@ test('a typed path offers to add from that folder, and reads nothing until press
   const read = (host.callsOf('plugin.request') as { name: string; timeoutMs?: number }[]).find((request) => request.name === 'source.preview')
   assert.equal(read?.timeoutMs, 120000)
   await expectClean(view)
+})
+
+test('a Windows path is a path when the worker reports win32, and search text otherwise', async () => {
+  const win = await open({ state: stateOf({ skills: [HANDWRITTEN], overrides: { platform: 'win32' } }) })
+  await win.view.type(SEARCH_FIELD, 'C:\\dev\\skills')
+  await afterPause(win.view)
+  assert.deepEqual(win.log.pathChecks, ['C:\\dev\\skills'])
+  assert.equal(win.log.searches.length, 0)
+  assert.notEqual(win.view.find({ text: FR.addFromFolder }), null)
+  const mac = await open()
+  await mac.view.type(SEARCH_FIELD, 'C:\\dev\\skills')
+  await afterPause(mac.view)
+  assert.deepEqual(mac.log.pathChecks, [])
+  assert.deepEqual(mac.log.searches, ['C:\\dev\\skills'])
 })
 
 test('Enter on a path reads it like a press on the line', async () => {

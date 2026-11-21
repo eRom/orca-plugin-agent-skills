@@ -83,6 +83,8 @@ let currentQuery = ''
 let workspaceKey: string | null = null
 /** Identifiant de l'espace montré : chaque demande au worker le renvoie, pour qu'il refuse d'agir sur un autre espace. */
 let shownWorkspaceId = ''
+/** Plateforme du dernier état reçu ; avant le premier, `posix` : seules les formes de chemin POSIX comptent. */
+let shownPlatform = 'posix'
 /** Numéro de la dernière lecture d'état demandée : une lecture plus ancienne qui finit après n'est pas gardée. */
 let stateTicket = 0
 /** Vrai entre l'appui et la réponse de `op.start` : un état poussé alors ne dit rien du geste qui part. */
@@ -129,6 +131,7 @@ function applyState(next: PanelState): void {
   if (workspaceKey !== null && key !== workspaceKey) resetAll()
   workspaceKey = key
   shownWorkspaceId = next.workspace.status === 'ready' ? next.workspace.id : ''
+  shownPlatform = next.platform
   set(panelState, next)
   set(loadError, null)
 }
@@ -211,7 +214,7 @@ async function runPathCheck(text: string, gen: number): Promise<void> {
 }
 
 function run(text: string, gen: number): void {
-  void (isPathInput(text) ? runPathCheck(text, gen) : runSearch(text, gen))
+  void (isPathInput(text, shownPlatform) ? runPathCheck(text, gen) : runSearch(text, gen))
 }
 
 /** Lance la recherche ou l'aperçu pour le texte du champ, après `delay` ms ; en dessous du minimum, la liste du projet revient. */
@@ -241,7 +244,7 @@ export function onQueryChange(value: string): void {
 export function submitQuery(value: string): void {
   currentQuery = value
   const text = value.trim()
-  if (text.length >= MIN_QUERY_LENGTH && isPathInput(text)) {
+  if (text.length >= MIN_QUERY_LENGTH && isPathInput(text, shownPlatform)) {
     void readPath(text)
     return
   }
@@ -373,7 +376,7 @@ function applyFinished(finished: OpFinished): void {
       const text = currentQuery
       set(addFlow, null)
       putNote(null, note)
-      if (isPathInput(text.trim())) schedule(text, 0)
+      if (isPathInput(text.trim(), shownPlatform)) schedule(text, 0)
     }
   } else {
     putNote(op.folder, hasNote ? note : null)
@@ -405,7 +408,7 @@ export const cancelConfirmation = (): void => {
   })
   // Le « Remplacer » annulé a laissé le champ sur son chemin : la ligne « Ajouter depuis ce dossier » revient, sauf si la
   // liste à cases est affichée (relire le chemin l'effacerait avec ses cases).
-  if (wasReplace && !checklistShown && isPathInput(currentQuery.trim())) schedule(currentQuery, 0)
+  if (wasReplace && !checklistShown && isPathInput(currentQuery.trim(), shownPlatform)) schedule(currentQuery, 0)
 }
 
 /** Tourne une fois avant le premier rendu ; ce qui est poussé dans `subscriptions` s'arrête avec le panneau. */
@@ -414,6 +417,7 @@ export function setup(ctx: PanelContext): void {
   currentQuery = ''
   workspaceKey = null
   shownWorkspaceId = ''
+  shownPlatform = 'posix'
   stateTicket = 0
   starting = false
   stopTimer()

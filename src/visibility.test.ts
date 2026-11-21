@@ -1,4 +1,5 @@
 // Modèle de visibilité : des ScanResult construits à la main, aucun accès disque.
+import { win32 } from 'node:path'
 import { assert, test } from 'orca/testing'
 import type { CopyKind, DiskSkill, ScanResult, SkillCopy } from './scan'
 import type { ManagedDir } from './skill-dirs'
@@ -171,6 +172,16 @@ test('labels sources: remote, local abbreviated, handwritten', () => {
   assert.deepEqual(sourceLabel({ source: '/Users/me/dev/x', libName: 'x' }, HOME), { kind: 'local', path: '~/dev/x' })
   assert.deepEqual(sourceLabel({ source: '/opt/skills', libName: 'x' }, HOME), { kind: 'local', path: '/opt/skills' })
   assert.deepEqual(sourceLabel(undefined, HOME), { kind: 'handwritten' })
+})
+
+test('a Windows lock source is local when read with the win32 path API', () => {
+  assert.deepEqual(sourceLabel({ source: 'C:\\src\\skill', libName: 'x' }, 'C:\\Users\\r', win32), { kind: 'local', path: 'C:\\src\\skill' })
+  assert.deepEqual(sourceLabel({ source: 'C:\\Users\\r\\src', libName: 'x' }, 'C:\\Users\\r', win32), { kind: 'local', path: '~\\src' })
+  assert.deepEqual(sourceLabel({ source: 'owner/repo', libName: 'x' }, 'C:\\Users\\r', win32), { kind: 'remote', source: 'owner/repo' })
+  const lock = new Map<string, LockEntry>([['alpha', { source: 'C:\\src\\skill', libName: 'alpha' }]])
+  const scan = scanOf(skill('alpha', [copy('.agents/skills', 'alpha', 'h1')]))
+  const [row] = buildRows(scan, lock, ROMAIN_AGENTS, NO_EXCLUSIONS, 'C:\\Users\\r', win32)
+  assert.equal(row!.source.kind, 'local')
 })
 
 test('buildRows labels each skill from the lock entry of its folder', () => {
