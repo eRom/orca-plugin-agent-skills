@@ -3,9 +3,9 @@ import { lstat, mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/pro
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { contentHash } from './fsops'
-import { addSkills, keepVersion, propagate, removeFromDir, removeSkill, type OpContext, type OpResult } from './operations'
+import { addSkills, keepVersion, propagate, removeSkill, type OpContext, type OpResult } from './operations'
 import { LIB_AGENT_BY_DIR, MANAGED_DIRS, type ManagedDir } from './skill-dirs'
-import { fakeSkillsLib, fakeTrasher, ROMAIN_AGENTS, tempDir, writeSkill } from './test-fixtures'
+import { fakeSkillsLib, fakeTrasher, tempDir, writeSkill } from './test-fixtures'
 
 const WRITE_DIRS: ManagedDir[] = ['.agents/skills', '.claude/skills', '.grok/skills', '.openclaude/skills']
 
@@ -17,7 +17,7 @@ function setup(label: string, writeDirs: readonly ManagedDir[] = WRITE_DIRS) {
   const root = tempDir(`ops-${label}`)
   const lib = fakeSkillsLib()
   const trash = fakeTrasher()
-  const ctx: OpContext = { root, home: '/home/test', lib, trash, tmpdir: tempDir(`ops-${label}-tmp`), writeDirs, active: ROMAIN_AGENTS }
+  const ctx: OpContext = { root, lib, trash, noTrashCode: 'no-trash', tmpdir: tempDir(`ops-${label}-tmp`), writeDirs }
   const source = lib.source([
     { name: 'alpha', body: 'Alpha v1\n' },
     { name: 'Beta Skill', body: 'Beta v1\n' }
@@ -109,6 +109,23 @@ test('replace without a trash is refused', async () => {
   assert.equal(error.code, 'no-trash')
   assert.equal(await hashOf(root, '.claude/skills', 'alpha'), before)
   assert.equal(lib.calls.install.length, 0)
+})
+
+test('every gesture that needs the Trash refuses with the code of its context, touching nothing', async () => {
+  for (const code of ['trash-unverified', 'network-path'] as const) {
+    const { root, lib, ctx, source } = setup(`refuse-${code}`)
+    writeSkill(root, '.claude/skills', 'alpha', 'name: alpha', 'Old content\n')
+    writeSkill(root, '.agents/skills', 'alpha', 'name: alpha', 'Other content\n')
+    const before = [await hashOf(root, '.claude/skills', 'alpha'), await hashOf(root, '.agents/skills', 'alpha')]
+    const refused = { ...ctx, trash: null, noTrashCode: code }
+    assert.equal(failure(await addSkills(refused, source, ['alpha'], true)).code, code)
+    assert.equal(failure(await removeSkill(refused, 'alpha')).code, code)
+    const hash = await hashOf(root, '.claude/skills', 'alpha')
+    assert.equal(failure(await keepVersion(refused, 'alpha', hash)).code, code)
+    assert.deepEqual([await hashOf(root, '.claude/skills', 'alpha'), await hashOf(root, '.agents/skills', 'alpha')], before)
+    assert.equal(lib.calls.install.length, 0)
+    assert.equal(lib.calls.untrack.length, 0)
+  }
 })
 
 test('an install failing after the trash says so', async () => {
@@ -255,8 +272,7 @@ test('keepVersion copies the chosen version over the others after trashing them'
   writeSkill(root, '.claude/skills', 'alpha', 'name: alpha', 'v2\n')
   writeSkill(root, '.grok/skills', 'alpha', 'name: alpha', 'v2\n')
   const chosen = await hashOf(root, '.claude/skills', 'alpha')
-  const result = success(await keepVersion(ctx, 'alpha', chosen))
-  assert.deepEqual(result.lostAgents, [])
+  success(await keepVersion(ctx, 'alpha', chosen))
   assert.deepEqual(trash.trashed, [join(root, '.agents/skills/alpha')])
   assert.match(await readFile(join(trash.moved.get(join(root, '.agents/skills/alpha'))!, 'SKILL.md'), 'utf8'), /v1/)
   for (const dir of ['.agents/skills', '.claude/skills', '.grok/skills']) assert.equal(await hashOf(root, dir, 'alpha'), chosen, dir)
@@ -433,79 +449,4 @@ test('remove reports a trash failure without untracking', async () => {
   assert.equal(error.trashed, undefined)
   assert.equal(lib.calls.untrack.length, 0)
   assert.equal(await exists(join(root, '.claude/skills/alpha')), true)
-})
-
-test('removeFromDir reports the agents that lost the skill', async () => {
-  const { root, lib, trash, ctx } = setup('remove-from-dir')
-  for (const dir of ['.agents/skills', '.claude/skills', '.grok/skills']) writeSkill(root, dir, 'alpha', 'name: alpha')
-  const result = success(await removeFromDir(ctx, 'alpha', '.grok/skills'))
-  assert.deepEqual(result.lostAgents, ['grok'])
-  assert.deepEqual(trash.trashed, [join(root, '.grok/skills/alpha')])
-  assert.equal(await exists(join(root, '.agents/skills/alpha')), true)
-  assert.equal(lib.calls.untrack.length, 0)
-})
-
-test('removeFromDir on the last copy is a full removal', async () => {
-  const { root, lib, trash, ctx } = setup('remove-from-dir-last')
-  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
-  lib.lock.set('alpha', { source: 'owner/repo', libName: 'alpha' })
-  const result = success(await removeFromDir(ctx, 'alpha', '.claude/skills'))
-  assert.equal(result.removedAll, true)
-  assert.deepEqual(result.lostAgents, ['claude', 'opencode'])
-  assert.deepEqual(trash.trashed, [join(root, '.claude/skills/alpha')])
-  assert.equal(lib.calls.untrack.length, 1)
-  assert.equal(lib.lock.has('alpha'), false)
-})
-
-test('removeFromDir with copies left does not report a full removal', async () => {
-  const { root, lib, ctx } = setup('remove-from-dir-not-last')
-  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
-  writeSkill(root, '.grok/skills', 'alpha', 'name: alpha')
-  const result = success(await removeFromDir(ctx, 'alpha', '.grok/skills'))
-  assert.equal(result.removedAll, undefined)
-  assert.equal(lib.calls.untrack.length, 0)
-})
-
-test('removeFromDir lists every agent that read only that dir', async () => {
-  const { root, ctx } = setup('remove-from-dir-many')
-  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
-  writeSkill(root, '.agents/skills', 'alpha', 'name: alpha')
-  // `.agents` est lu par codex, opencode, pi, antigravity, dsh ; opencode lit aussi `.claude` et reste servi.
-  const result = success(await removeFromDir(ctx, 'alpha', '.agents/skills'))
-  assert.deepEqual(result.lostAgents, ['codex', 'pi', 'antigravity', 'dsh'])
-})
-
-test('removeFromDir refuses a dir another copy links to', async () => {
-  const { root, trash, ctx } = setup('remove-from-dir-linked')
-  writeSkill(root, '.agents/skills', 'alpha', 'name: alpha')
-  await mkdir(join(root, '.claude/skills'), { recursive: true })
-  await symlink(join(root, '.agents/skills/alpha'), join(root, '.claude/skills/alpha'))
-  const error = failure(await removeFromDir(ctx, 'alpha', '.agents/skills'))
-  assert.deepEqual(error, { code: 'linked-target', dirs: ['.claude/skills'] })
-  assert.deepEqual(trash.trashed, [])
-  assert.equal(await exists(join(root, '.agents/skills/alpha')), true)
-})
-
-test('removeFromDir trashes a link itself, never its external target', async () => {
-  const { root, trash, ctx } = setup('remove-from-dir-link')
-  const outside = await outsideSkill('remove-from-dir-link')
-  writeSkill(root, '.agents/skills', 'alpha', 'name: alpha')
-  await mkdir(join(root, '.claude/skills'), { recursive: true })
-  await symlink(join(outside, 'skills/alpha'), join(root, '.claude/skills/alpha'))
-  success(await removeFromDir(ctx, 'alpha', '.claude/skills'))
-  assert.deepEqual(trash.trashed, [join(root, '.claude/skills/alpha')])
-  assert.match(await readFile(join(outside, 'skills/alpha/SKILL.md'), 'utf8'), /Outside/)
-})
-
-test('removeFromDir refuses an unsafe dir, a missing copy and a missing trash', async () => {
-  const { root, trash, ctx } = setup('remove-from-dir-edge')
-  const outside = tempDir('ops-remove-from-dir-outside')
-  writeSkill(outside, 'skills', 'alpha', 'name: alpha')
-  await symlink(outside, join(root, '.grok'))
-  writeSkill(root, '.claude/skills', 'alpha', 'name: alpha')
-  assert.deepEqual(failure(await removeFromDir(ctx, 'alpha', '.grok/skills')), { code: 'unsafe-dir', dirs: ['.grok/skills'] })
-  assert.equal(failure(await removeFromDir(ctx, 'alpha', '.agents/skills')).code, 'gone')
-  assert.equal(failure(await removeFromDir({ ...ctx, trash: null }, 'alpha', '.claude/skills')).code, 'no-trash')
-  assert.deepEqual(trash.trashed, [])
-  assert.equal(await exists(join(outside, 'skills/alpha/SKILL.md')), true)
 })

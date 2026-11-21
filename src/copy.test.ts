@@ -52,9 +52,10 @@ test('the texts fixed by the spec are the French ones', () => {
   const fr = MESSAGES.fr
   assert.equal(fr.remoteWorkspace, 'Espace distant : non pris en charge.')
   assert.equal(fr.noWorkspace, 'Ouvrez un espace de travail.')
+  assert.equal(fr.wslWorkspace, "Espace WSL non pris en charge pour l'instant.")
+  assert.equal(MESSAGES.en.wslWorkspace, 'WSL workspaces are not supported yet.')
   assert.equal(fr.replaceAsk('x'), "Remplacer x ? L'actuelle part à la Corbeille.")
   assert.equal(fr.removeAsk('x'), 'Retirer x du projet ? Elle disparaît pour tous les agents. Une copie part à la Corbeille.')
-  assert.equal(fr.pointsHere('.claude/skills'), ".claude/skills pointe ici : retirez-le d'abord")
   assert.equal(fr.addCount(3), 'Ajouter (3)')
 })
 
@@ -62,13 +63,12 @@ test('describeError translates every operation error code, in both languages', (
   for (const locale of LOCALES) {
     const m = MESSAGES[locale]
     for (const code of ['busy', 'no-workspace', 'no-trash', 'gone', 'preview-expired', 'path-not-found', 'no-target', 'workspace-changed', 'source-in-project'] as const) {
-      const text = describeError({ code }, m)
+      const text = describeError({ code }, m, 'win32')
       assert.ok(text.trim() !== '', `${locale} ${code}`)
       assert.notEqual(text, code)
     }
-    assert.ok(describeError({ code: 'collision', folders: ['alpha', 'beta'] }, m).includes('alpha, beta'))
-    assert.ok(describeError({ code: 'unsafe-dir', dirs: ['.claude/skills'] }, m).includes('.claude/skills'))
-    assert.ok(describeError({ code: 'linked-target', dirs: ['.claude/skills'] }, m).includes('.claude/skills'))
+    assert.ok(describeError({ code: 'collision', folders: ['alpha', 'beta'] }, m, 'win32').includes('alpha, beta'))
+    assert.ok(describeError({ code: 'unsafe-dir', dirs: ['.claude/skills'] }, m, 'win32').includes('.claude/skills'))
   }
 })
 
@@ -86,13 +86,12 @@ test('describeError translates library and plugin diagnostics by code', () => {
       'SKILLS_INVALID_LOCAL_LOCK',
       'SKILLS_LOCK_WRITE_FAILED',
       'SKILLS_SKILL_SKIPPED',
-      'PLUGIN_EXCLUSIONS_FAILED',
       'PLUGIN_LOCK_KEPT',
       'PLUGIN_UNSAFE_DIR',
       'PLUGIN_NOT_TRACKED',
       'PLUGIN_STAGE_INCOMPLETE'
     ]) {
-      const text = describeError(diagnostic(code), m)
+      const text = describeError(diagnostic(code), m, 'win32')
       assert.ok(!text.includes('RAW MESSAGE'), `${locale} ${code} stays untranslated`)
       assert.ok(text.trim() !== '')
     }
@@ -100,9 +99,9 @@ test('describeError translates library and plugin diagnostics by code', () => {
 })
 
 test('describeError shows the raw message of an unknown code', () => {
-  assert.equal(describeError({ code: 'SKILLS_SOMETHING_NEW', message: 'Something new happened' }, MESSAGES.fr), 'Something new happened')
+  assert.equal(describeError({ code: 'SKILLS_SOMETHING_NEW', message: 'Something new happened' }, MESSAGES.fr, 'win32'), 'Something new happened')
   // Un nom hérité d'Object ne doit pas passer pour un code connu.
-  assert.equal(describeError({ code: 'constructor', message: 'raw' }, MESSAGES.fr), 'raw')
+  assert.equal(describeError({ code: 'constructor', message: 'raw' }, MESSAGES.fr, 'win32'), 'raw')
 })
 
 test('describeError joins the diagnostics of a library failure and says when the Trash holds the old version', () => {
@@ -114,8 +113,21 @@ test('describeError joins the diagnostics of a library failure and says when the
     ],
     trashed: true
   }
-  const fr = describeError(error, MESSAGES.fr)
+  const fr = describeError(error, MESSAGES.fr, 'win32')
   assert.ok(fr.includes('second line'))
   assert.ok(fr.includes(MESSAGES.fr.trashed))
-  assert.ok(!describeError({ ...error, trashed: false }, MESSAGES.fr).includes(MESSAGES.fr.trashed))
+  assert.ok(!describeError({ ...error, trashed: false }, MESSAGES.fr, 'win32').includes(MESSAGES.fr.trashed))
+})
+
+test('the Trash refusals name the OS, and the network refusal needs none', () => {
+  for (const locale of LOCALES) {
+    const m = MESSAGES[locale]
+    assert.ok(describeError({ code: 'trash-unverified' }, m, 'win32').includes('Windows'), `${locale} win32`)
+    assert.ok(describeError({ code: 'trash-unverified' }, m, 'linux').includes('Linux'), `${locale} linux`)
+    assert.ok(m.trashUnverified('Windows').includes('Windows'))
+    assert.notEqual(describeError({ code: 'network-path' }, m, 'win32').trim(), '')
+    assert.notEqual(m.trashNetwork.trim(), '')
+  }
+  assert.equal(MESSAGES.fr.errors.trashUnverified('Windows'), "Corbeille pas encore vérifiée sous Windows : rien n'a été remplacé ni retiré.")
+  assert.equal(MESSAGES.fr.errors.networkPath, "Pas de Corbeille sur un chemin réseau : rien n'a été remplacé ni retiré.")
 })

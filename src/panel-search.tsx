@@ -104,7 +104,7 @@ const sourceText = (label: Extract<AddFlow, { status: 'ready' }>['label']): stri
   label.kind === 'local' ? label.path : label.kind === 'remote' ? label.source : ''
 
 /** Ce que le worker a lu d'une source : une ligne « Ajouter depuis ce dossier », ou la liste à cases quand elle porte plusieurs skills. */
-export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: Messages) {
+export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: Messages, platform: string) {
   if (flow === null) return null
   if (flow.status === 'loading') {
     // Un ajout depuis skills.sh lit la source avant de s'engager ; un chemin se lit pendant la frappe.
@@ -118,7 +118,7 @@ export function renderAddFlow(flow: AddFlow | null, busy: OpRequest | null, m: M
         </Text>
       )
     }
-    return renderNote('add-flow-failed', { error: flow.error, message: flow.message, warnings: [] }, m)
+    return renderNote('add-flow-failed', { error: flow.error, message: flow.message, warnings: [] }, m, platform)
   }
   const count = flow.selected.length
   return (

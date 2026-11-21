@@ -10,6 +10,7 @@ export const LOCALES: readonly Locale[] = ['en', 'fr']
 export type Messages = {
   // Espace de travail.
   remoteWorkspace: string
+  wslWorkspace: string
   noWorkspace: string
   missingWorkspace: string
   homeWorkspace: string
@@ -39,7 +40,6 @@ export type Messages = {
   handwritten: string
   externalLink: string
   absentFor: (agents: string) => string
-  excludedFor: (agents: string) => string
   propagate: string
   removeSkillLabel: (name: string) => string
   expandLabel: (name: string) => string
@@ -52,10 +52,6 @@ export type Messages = {
   // Ligne dépliée.
   readBy: (agents: string) => string
   readByNobody: string
-  removeFromDir: string
-  addFor: (agent: string) => string
-  reinstate: (agent: string) => string
-  pointsHere: (dirs: string) => string
   differs: string
   versionLabel: (n: number) => string
   keepThis: string
@@ -68,9 +64,6 @@ export type Messages = {
   replaceConfirm: string
   removeAsk: (name: string) => string
   removeConfirm: string
-  removeDirAsk: (name: string, dir: string) => string
-  losesSight: (agents: string) => string
-  keepsSight: (agents: string) => string
 
   // Recherche et ajout.
   searching: string
@@ -93,6 +86,8 @@ export type Messages = {
   // Bandeaux et erreurs.
   outsideProject: (dir: string) => string
   trashUnavailable: string
+  trashUnverified: (os: string) => string
+  trashNetwork: string
   lockUnreadable: string
   trashed: string
   errors: {
@@ -100,8 +95,9 @@ export type Messages = {
     noWorkspace: string
     collision: (folders: string) => string
     noTrash: string
+    trashUnverified: (os: string) => string
+    networkPath: string
     unsafeDir: (dirs: string) => string
-    linkedTarget: (dirs: string) => string
     gone: string
     previewExpired: string
     workspaceChanged: string
@@ -131,7 +127,6 @@ export type Messages = {
     SKILLS_BROKEN_SYMLINK: string
     SKILLS_SYMLINK_CYCLE: string
     SKILLS_SYMLINK_OUTSIDE_SKILL: string
-    PLUGIN_EXCLUSIONS_FAILED: string
     PLUGIN_LOCK_KEPT: string
     PLUGIN_UNSAFE_DIR: string
     PLUGIN_NOT_TRACKED: string
@@ -142,6 +137,7 @@ export type Messages = {
 
 const en: Messages = {
   remoteWorkspace: 'Remote workspace: not supported.',
+  wslWorkspace: 'WSL workspaces are not supported yet.',
   noWorkspace: 'Open a workspace.',
   missingWorkspace: 'The folder of this workspace no longer exists.',
   homeWorkspace: 'The home folder is not a project.',
@@ -169,7 +165,6 @@ const en: Messages = {
   handwritten: 'handwritten',
   externalLink: 'external link',
   absentFor: (agents) => `Missing for ${agents}`,
-  excludedFor: (agents) => `Excluded for ${agents}`,
   propagate: 'Propagate',
   removeSkillLabel: (name) => `Remove ${name}`,
   expandLabel: (name) => `Show details of ${name}`,
@@ -181,10 +176,6 @@ const en: Messages = {
 
   readBy: (agents) => `Read by ${agents}`,
   readByNobody: 'Read by no active agent',
-  removeFromDir: 'Remove from here',
-  addFor: (agent) => `Add for ${agent}`,
-  reinstate: (agent) => `Reinstate ${agent}`,
-  pointsHere: (dirs) => `${dirs} points here: remove it first`,
   differs: 'Different from one folder to another',
   versionLabel: (n) => `Version ${n}`,
   keepThis: 'Keep this one',
@@ -196,9 +187,6 @@ const en: Messages = {
   replaceConfirm: 'Replace',
   removeAsk: (name) => `Remove ${name} from the project? It disappears for every agent. A copy goes to the Trash.`,
   removeConfirm: 'Remove',
-  removeDirAsk: (name, dir) => `Remove ${name} from ${dir}? A copy goes to the Trash.`,
-  losesSight: (agents) => `${agents} will no longer see it.`,
-  keepsSight: (agents) => `${agents} still see it through another folder.`,
 
   searching: 'Searching...',
   reading: 'Reading the folder...',
@@ -218,6 +206,8 @@ const en: Messages = {
 
   outsideProject: (dir) => `${dir} points outside this project: nothing is written to it or removed from it.`,
   trashUnavailable: 'The Trash is unavailable: replacing and removing are refused.',
+  trashUnverified: (os) => `The Trash is not verified on ${os} yet: replacing and removing are refused.`,
+  trashNetwork: 'Workspace on a network path: no Trash, replacing and removing are refused.',
   lockUnreadable: 'skills-lock.json cannot be read: sources are not shown and an add may fail.',
   trashed: 'The replaced version is in the Trash.',
   errors: {
@@ -225,8 +215,9 @@ const en: Messages = {
     noWorkspace: 'No usable workspace.',
     collision: (folders) => `A skill with the same name already exists: ${folders}.`,
     noTrash: 'The Trash is unavailable: nothing was replaced or removed.',
+    trashUnverified: (os) => `The Trash is not verified on ${os} yet: nothing was replaced or removed.`,
+    networkPath: 'No Trash on a network path: nothing was replaced or removed.',
     unsafeDir: (dirs) => `${dirs} points outside the project: nothing was written there.`,
-    linkedTarget: (dirs) => `${dirs} points here: remove it first`,
     gone: 'This skill no longer exists on disk.',
     previewExpired: 'The preview of the source expired: start again.',
     workspaceChanged: 'The focused workspace changed: nothing was done. Try again here.',
@@ -255,7 +246,6 @@ const en: Messages = {
     SKILLS_BROKEN_SYMLINK: 'A link in this skill is broken: skipped.',
     SKILLS_SYMLINK_CYCLE: 'A link in this skill loops: skipped.',
     SKILLS_SYMLINK_OUTSIDE_SKILL: 'A link in this skill points outside it: skipped.',
-    PLUGIN_EXCLUSIONS_FAILED: 'Done, but the exclusions could not be saved.',
     PLUGIN_LOCK_KEPT: 'The lock entry was kept: a copy remains for an agent that was not targeted.',
     PLUGIN_UNSAFE_DIR: 'A skills folder points outside the project: left untouched.',
     PLUGIN_NOT_TRACKED: 'Copied without a lock entry: no target folder is known to the skills library.',
@@ -266,6 +256,7 @@ const en: Messages = {
 
 const fr: Messages = {
   remoteWorkspace: 'Espace distant : non pris en charge.',
+  wslWorkspace: "Espace WSL non pris en charge pour l'instant.",
   noWorkspace: 'Ouvrez un espace de travail.',
   missingWorkspace: "Le dossier de cet espace n'existe plus.",
   homeWorkspace: "Le dossier personnel n'est pas un projet.",
@@ -293,7 +284,6 @@ const fr: Messages = {
   handwritten: 'écrite à la main',
   externalLink: 'lien externe',
   absentFor: (agents) => `Absente pour ${agents}`,
-  excludedFor: (agents) => `Exclue pour ${agents}`,
   propagate: 'Propager',
   removeSkillLabel: (name) => `Retirer ${name}`,
   expandLabel: (name) => `Afficher le détail de ${name}`,
@@ -305,10 +295,6 @@ const fr: Messages = {
 
   readBy: (agents) => `Lue par ${agents}`,
   readByNobody: 'Lue par aucun agent actif',
-  removeFromDir: "Retirer d'ici",
-  addFor: (agent) => `Ajouter pour ${agent}`,
-  reinstate: (agent) => `Réintégrer ${agent}`,
-  pointsHere: (dirs) => `${dirs} pointe ici : retirez-le d'abord`,
   differs: 'Différente selon les dossiers',
   versionLabel: (n) => `Version ${n}`,
   keepThis: 'Garder celle-ci',
@@ -320,9 +306,6 @@ const fr: Messages = {
   replaceConfirm: 'Remplacer',
   removeAsk: (name) => `Retirer ${name} du projet ? Elle disparaît pour tous les agents. Une copie part à la Corbeille.`,
   removeConfirm: 'Retirer',
-  removeDirAsk: (name, dir) => `Retirer ${name} de ${dir} ? Une copie part à la Corbeille.`,
-  losesSight: (agents) => `${agents} ne la verront plus.`,
-  keepsSight: (agents) => `${agents} la voient encore par un autre dossier.`,
 
   searching: 'Recherche…',
   reading: 'Lecture du dossier…',
@@ -342,6 +325,8 @@ const fr: Messages = {
 
   outsideProject: (dir) => `${dir} pointe hors du projet : rien n'y est écrit ni retiré.`,
   trashUnavailable: 'La Corbeille est indisponible : remplacer et retirer sont refusés.',
+  trashUnverified: (os) => `Corbeille pas encore vérifiée sous ${os} : remplacer et retirer sont refusés.`,
+  trashNetwork: 'Espace sur un chemin réseau : pas de Corbeille, remplacer et retirer sont refusés.',
   lockUnreadable: "skills-lock.json est illisible : les sources ne s'affichent pas et un ajout peut échouer.",
   trashed: 'La version remplacée est dans la Corbeille.',
   errors: {
@@ -349,8 +334,9 @@ const fr: Messages = {
     noWorkspace: 'Aucun espace de travail utilisable.',
     collision: (folders) => `Une skill du même nom existe déjà : ${folders}.`,
     noTrash: "La Corbeille est indisponible : rien n'a été remplacé ni retiré.",
+    trashUnverified: (os) => `Corbeille pas encore vérifiée sous ${os} : rien n'a été remplacé ni retiré.`,
+    networkPath: "Pas de Corbeille sur un chemin réseau : rien n'a été remplacé ni retiré.",
     unsafeDir: (dirs) => `${dirs} pointe hors du projet : rien n'y a été écrit.`,
-    linkedTarget: (dirs) => `${dirs} pointe ici : retirez-le d'abord`,
     gone: "Cette skill n'existe plus sur le disque.",
     previewExpired: "L'aperçu de la source a expiré : recommencez.",
     workspaceChanged: "L'espace actif a changé : rien n'a été fait. Recommencez ici.",
@@ -379,7 +365,6 @@ const fr: Messages = {
     SKILLS_BROKEN_SYMLINK: 'Un lien de cette skill est cassé : ignoré.',
     SKILLS_SYMLINK_CYCLE: 'Un lien de cette skill boucle : ignoré.',
     SKILLS_SYMLINK_OUTSIDE_SKILL: 'Un lien de cette skill sort de la skill : ignoré.',
-    PLUGIN_EXCLUSIONS_FAILED: "Fait, mais les exclusions n'ont pas pu être enregistrées.",
     PLUGIN_LOCK_KEPT: "L'entrée du lock est gardée : une copie subsiste chez un agent non visé.",
     PLUGIN_UNSAFE_DIR: 'Un dossier de skills pointe hors du projet : laissé intact.',
     PLUGIN_NOT_TRACKED: "Copiée sans entrée au lock : aucun dossier cible n'est connu de la bibliothèque.",
@@ -404,8 +389,9 @@ const OP_ERROR_CODES: ReadonlySet<string> = new Set<OpError['code']>([
   'source-in-project',
   'collision',
   'no-trash',
+  'trash-unverified',
+  'network-path',
   'unsafe-dir',
-  'linked-target',
   'gone',
   'preview-expired',
   'path-not-found',
@@ -422,8 +408,22 @@ function describeDiagnostic(diagnostic: LibDiagnostic, m: Messages): string {
   return diagnostic.skill ? `${text} (${diagnostic.skill})` : text
 }
 
-/** Les diagnostics d'une erreur, un par ligne : le panneau n'en montre que trois. */
-export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages): string[] {
+/** Le nom d'un OS tel que l'utilisateur le dit (`process.platform` pour les autres). */
+export function osLabel(platform: string): string {
+  switch (platform) {
+    case 'win32':
+      return 'Windows'
+    case 'linux':
+      return 'Linux'
+    case 'darwin':
+      return 'macOS'
+    default:
+      return platform
+  }
+}
+
+/** Les diagnostics d'une erreur, un par ligne : le panneau n'en montre que trois. `platform` : celui du worker, pour nommer l'OS. */
+export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages, platform: string): string[] {
   if (!isOpError(error)) return [describeDiagnostic(error, m)]
   const lines = ((): string[] => {
     switch (error.code) {
@@ -439,10 +439,12 @@ export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages):
         return [m.errors.collision((error.folders ?? []).join(', '))]
       case 'no-trash':
         return [m.errors.noTrash]
+      case 'trash-unverified':
+        return [m.errors.trashUnverified(osLabel(platform))]
+      case 'network-path':
+        return [m.errors.networkPath]
       case 'unsafe-dir':
         return [m.errors.unsafeDir((error.dirs ?? []).join(', '))]
-      case 'linked-target':
-        return [m.errors.linkedTarget((error.dirs ?? []).join(', '))]
       case 'gone':
         return [m.errors.gone]
       case 'preview-expired':
@@ -462,4 +464,4 @@ export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages):
 }
 
 /** Le texte d'une erreur en une chaîne (lignes jointes par un espace). */
-export const describeError = (error: OpError | LibDiagnostic, m: Messages): string => describeErrorLines(error, m).join(' ')
+export const describeError = (error: OpError | LibDiagnostic, m: Messages, platform: string): string => describeErrorLines(error, m, platform).join(' ')

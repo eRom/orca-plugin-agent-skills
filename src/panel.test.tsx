@@ -49,7 +49,6 @@ type StateOptions = {
   agents?: readonly string[]
   skills?: DiskSkill[]
   lock?: Record<string, LockEntry>
-  excluded?: Record<string, string[]>
   workspace?: PanelState['workspace']
   overrides?: Partial<PanelState>
 }
@@ -60,18 +59,18 @@ function stateOf(options: StateOptions = {}): PanelState {
     { skills: options.skills ?? [], unsafeDirs: [] },
     new Map(Object.entries(options.lock ?? {})),
     agents,
-    (folder) => options.excluded?.[folder] ?? [],
     HOME
   )
   return {
-    workspace: options.workspace ?? { status: 'ready', id: 'identity:tool', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true },
+    workspace: options.workspace ?? { status: 'ready', id: 'identity:tool', name: 'erom-tool', branch: 'feat/skills', linkedWorktree: true, network: false },
     agents: agentViews(agents),
     detected: agentViews(agents).map((agent) => ({ ...agent, hidden: false })),
     inventory: 'detected',
     rows,
     unsafeDirs: [],
     lockUnreadable: false,
-    capabilities: { trash: true, folderPicker: true },
+    capabilities: { trash: 'ready', folderPicker: true },
+    platform: 'darwin',
     busy: null,
     ...options.overrides
   }
@@ -381,6 +380,20 @@ test('a typed path offers to add from that folder, and reads nothing until press
   await expectClean(view)
 })
 
+test('a Windows path is a path when the worker reports win32, and search text otherwise', async () => {
+  const win = await open({ state: stateOf({ skills: [HANDWRITTEN], overrides: { platform: 'win32' } }) })
+  await win.view.type(SEARCH_FIELD, 'C:\\dev\\skills')
+  await afterPause(win.view)
+  assert.deepEqual(win.log.pathChecks, ['C:\\dev\\skills'])
+  assert.equal(win.log.searches.length, 0)
+  assert.notEqual(win.view.find({ text: FR.addFromFolder }), null)
+  const mac = await open()
+  await mac.view.type(SEARCH_FIELD, 'C:\\dev\\skills')
+  await afterPause(mac.view)
+  assert.deepEqual(mac.log.pathChecks, [])
+  assert.deepEqual(mac.log.searches, ['C:\\dev\\skills'])
+})
+
 test('Enter on a path reads it like a press on the line', async () => {
   const { view, log } = await open()
   await view.type(SEARCH_FIELD, '~/dev/tools/skills/alpha', { submit: true })
@@ -554,7 +567,7 @@ test('cancelling the folder dialog leaves the field alone, and a timeout stays s
 })
 
 test('hides the folder button when the worker cannot open the dialog', async () => {
-  const state = stateOf({ skills: [HANDWRITTEN], overrides: { capabilities: { trash: true, folderPicker: false } } })
+  const state = stateOf({ skills: [HANDWRITTEN], overrides: { capabilities: { trash: 'ready', folderPicker: false } } })
   const { view } = await open({ state })
   assert.equal(view.find({ label: FR.pickFolderLabel }), null)
   await expectClean(view)
@@ -581,43 +594,72 @@ const SPREAD = [
   diskSkill('motion-context', [copyOf('.claude/skills', 'motion-context')], 'Context for motion work')
 ]
 
-test('the expanded row lists dirs, the agents they feed and reinstate', async () => {
-  // Grok est exclu de la skill ; Codex, Pi, Antigravity et DeepSeek Harness la voient par `.agents/skills`.
-  const state = stateOf({ skills: [SPREAD[1]!], excluded: { 'motion-context': ['grok'] } })
-  const { view, log } = await open({ state })
-  assert.equal(view.find({ text: FR.readBy('Claude, OpenCode') }), null, 'folded row hides its dirs')
-  await view.press({ label: FR.expandLabel('motion-context') })
-  assert.notEqual(view.find({ type: 'Code', text: '.claude/skills' }), null)
-  assert.notEqual(view.find({ text: FR.readBy('Claude, OpenCode') }), null)
-  assert.notEqual(view.find({ text: FR.removeFromDir }), null)
-  assert.notEqual(view.find({ label: FR.collapseLabel('motion-context') }), null)
-  // Un agent absent s'ajoute à la main, un agent exclu se réintègre.
-  assert.notEqual(view.find({ text: FR.addFor('Codex') }), null)
-  assert.equal(view.find({ text: FR.addFor('Grok') }), null)
-  await view.press({ text: FR.reinstate('Grok') })
-  // Un seul geste à la fois : le suivant attend la fin du premier.
-  await view.post('op.finished', { opId: 'op-1', op: { kind: 'reinstate', folder: 'motion-context', agent: 'grok' }, ok: true, warnings: [] })
-  await view.press({ text: FR.addFor('Codex') })
-  assert.deepEqual(log.ops, [
-    { kind: 'reinstate', folder: 'motion-context', agent: 'grok' },
-    { kind: 'propagate', folder: 'motion-context', agents: ['codex'] }
-  ])
+test('the chips carry the agent and the folder that gives it the skill as their alt text', async () => {
+  // Orca n'a pas d'infobulle sur une image : le `alt` est le seul porteur de l'information « par quel dossier ».
+  const { view } = await open({ state: stateOf({ skills: [HANDWRITTEN] }) })
+  const alts = view.findAll({ type: 'Image' }).map((image) => String(image.props.alt))
+  assert.ok(alts.includes(FR.agentSees('Claude', '.claude/skills')), 'an agent that sees the skill names its folder')
+  assert.ok(alts.includes(FR.agentAbsent('Grok')), 'an absent agent says so')
   await expectClean(view)
 })
 
-test('removing from a dir names who loses the skill and who still sees it', async () => {
-  const state = stateOf({ skills: [SPREAD[0]!] })
-  const { view, log } = await open({ state })
+test('a skill that is a link to outside the project carries the external link tag, even folded', async () => {
+  const external: SkillCopy = { dir: '.grok/skills', path: `${ROOT}/.grok/skills/x`, kind: 'external-link', realPath: '/elsewhere/x', hash: 'h2' }
+  const linked = diskSkill('x', [copyOf('.agents/skills', 'x', 'h1'), external])
+  const { view } = await open({ state: stateOf({ skills: [linked, HANDWRITTEN] }) })
+  assert.equal(view.findAll({ text: FR.externalLink }).length, 1, 'only the row with an external link, folded')
+  await view.press({ label: FR.expandLabel('x') })
+  // Les versions divergent (contenu du lien externe différent) : le dossier du lien porte aussi la mention.
+  assert.equal(view.findAll({ text: FR.externalLink }).length, 2)
+  await expectClean(view)
+})
+
+test('the expanded row of a skill in two identical dirs shows its description and no gesture of its own', async () => {
+  // Un seul retrait existe : l'icône corbeille de la ligne. Le détail ne porte ni dossier, ni « Retirer d'ici », ni « Ajouter pour ».
+  const { view } = await open({ state: stateOf({ skills: [SPREAD[0]!] }) })
   await view.press({ label: FR.expandLabel('alpha') })
-  const removeButtons = view.findAll({ type: 'Button', text: FR.removeFromDir })
-  assert.equal(removeButtons.length, 2, 'one per dir')
-  // Les copies suivent l'ordre des dossiers gérés : `.agents/skills`, puis `.claude/skills`.
-  await view.press(removeButtons[1]!)
-  // `.claude/skills` : Claude la perd ; OpenCode la voit encore par `.agents/skills`.
-  assert.notEqual(view.find({ text: FR.losesSight('Claude') }), null)
-  assert.notEqual(view.find({ text: FR.keepsSight('OpenCode') }), null)
-  await view.press({ text: FR.removeConfirm })
-  assert.deepEqual(log.ops, [{ kind: 'remove-dir', folder: 'alpha', dir: '.claude/skills' }])
+  assert.notEqual(view.find({ type: 'Text', text: 'About alpha' }), null)
+  assert.equal(view.find({ type: 'Code', text: '.claude/skills' }), null)
+  assert.equal(view.find({ text: FR.keepThis }), null, 'identical copies offer no version to keep')
+  // Les seuls boutons : le bandeau « Absente pour Grok » (Propager) ; l'icône corbeille est un IconButton.
+  assert.deepEqual(
+    view.findAll({ type: 'Button' }).map((button) => button.text),
+    [FR.propagate]
+  )
+  assert.notEqual(view.find({ label: FR.removeSkillLabel('alpha') }), null)
+  await expectClean(view)
+})
+
+test('a row whose copies differ still offers to keep one version once expanded', async () => {
+  const divergent = diskSkill('x', [copyOf('.claude/skills', 'x', 'hash-claude'), copyOf('.agents/skills', 'x', 'hash-agents')])
+  const { view } = await open({ state: stateOf({ skills: [divergent] }) })
+  await view.press({ label: FR.expandLabel('x') })
+  assert.deepEqual(
+    view.findAll({ type: 'Button' }).map((button) => button.text),
+    [FR.propagate, FR.keepThis, FR.keepThis]
+  )
+  await expectClean(view)
+})
+
+test('the "Read by" list of a divergent version follows the alphabetical agent order, not the folder order', async () => {
+  // Claude lit `.claude/skills`, Codex et Pi lisent `.agents/skills` : `.agents` passe avant `.claude` dans les dossiers gérés.
+  const divergent = diskSkill('x', [
+    copyOf('.agents/skills', 'x', 'hash-shared'),
+    copyOf('.claude/skills', 'x', 'hash-shared'),
+    copyOf('.grok/skills', 'x', 'hash-grok')
+  ])
+  const { view } = await open({ state: stateOf({ agents: ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'opencode', 'pi'], skills: [divergent] }) })
+  await view.press({ label: FR.expandLabel('x') })
+  assert.notEqual(view.find({ type: 'Text', text: FR.readBy('Antigravity, Claude, Codex, DeepSeek Harness, OpenCode, Pi') }), null)
+  assert.notEqual(view.find({ type: 'Text', text: FR.readBy('Grok') }), null)
+  await expectClean(view)
+})
+
+test('a row with nothing to detail has no expand button, a row with a description has one', async () => {
+  const bare = diskSkill('bare', [copyOf('.claude/skills', 'bare', 'h1'), copyOf('.agents/skills', 'bare', 'h1')], '')
+  const { view } = await open({ state: stateOf({ skills: [bare, SPREAD[0]!] }) })
+  assert.equal(view.find({ label: FR.expandLabel('bare') }), null, 'empty description, identical copies, no trust note')
+  assert.notEqual(view.find({ label: FR.expandLabel('alpha') }), null)
   await expectClean(view)
 })
 
@@ -646,24 +688,11 @@ test('a divergent skill warns, and its expanded row offers to keep one version',
   await expectClean(view)
 })
 
-test('an excluded agent is listed apart, not as a chip', async () => {
-  // AC-16 : « Exclue pour Grok », pas d'Image Grok, pas de bandeau orange pour lui.
-  const state = stateOf({ skills: [HANDWRITTEN], excluded: { 'motion-context': ['grok'] } })
-  const { view } = await open({ state })
-  assert.notEqual(view.find({ text: FR.excludedFor('Grok') }), null)
-  const alts = view.findAll({ type: 'Image' }).map((image) => String(image.props.alt))
-  assert.equal(alts.some((alt) => alt.startsWith('Grok')), false)
-  assert.equal(alts.length, ROMAIN.length - 1)
-  const warning = view.find({ type: 'Callout', text: new RegExp(FR.absentFor('')) })
-  assert.ok(warning && !warning.text.includes('Grok'))
-  await expectClean(view)
-})
-
 test('folds many chips into a summary', async () => {
   const wide = diskSkill('wide', [copyOf('.claude/skills', 'wide'), copyOf('.agents/skills', 'wide')])
   const { view } = await open({ state: stateOf({ agents: MANY, skills: [wide] }) })
   // Quatorze agents actifs : Grok et Kiro n'ont que leur propre dossier, les douze autres voient la skill.
-  const seeing = buildRows({ skills: [wide], unsafeDirs: [] }, new Map(), MANY, () => [], HOME)[0]!.agents.filter((a) => a.state === 'sees').length
+  const seeing = buildRows({ skills: [wide], unsafeDirs: [] }, new Map(), MANY, HOME)[0]!.agents.filter((a) => a.state === 'sees').length
   const summary = FR.chipsSummary(seeing, MANY.length)
   assert.equal(view.findAll({ type: 'Image' }).length, 0)
   await view.press({ text: summary })
@@ -685,7 +714,8 @@ test('workspace states show their message and nothing else', async () => {
     [{ status: 'none' }, FR.noWorkspace],
     [{ status: 'remote' }, FR.remoteWorkspace],
     [{ status: 'missing' }, FR.missingWorkspace],
-    [{ status: 'home' }, FR.homeWorkspace]
+    [{ status: 'home' }, FR.homeWorkspace],
+    [{ status: 'wsl' }, FR.wslWorkspace]
   ]
   for (const [workspace, message] of cases) {
     const { view } = await open({ state: stateOf({ workspace }) })
@@ -715,7 +745,6 @@ test('busy gestures disable the buttons and show progress', async () => {
 test('the label of the progress follows the gesture', async () => {
   const cases: [OpRequest, string][] = [
     [{ kind: 'remove', folder: 'motion-context' }, FR.removing],
-    [{ kind: 'remove-dir', folder: 'motion-context', dir: '.claude/skills' }, FR.removing],
     [{ kind: 'keep', folder: 'motion-context', hash: 'h' }, FR.copying],
     [{ kind: 'add', previewId: 'p', names: ['alpha'], replace: false }, FR.adding]
   ]
@@ -811,9 +840,9 @@ test('warnings of a gesture are shown under the row', async () => {
     opId: 'op-1',
     op: { kind: 'propagate', folder: 'motion-context', agents: ['codex'] },
     ok: true,
-    warnings: [{ code: 'PLUGIN_EXCLUSIONS_FAILED', message: 'disk full' }]
+    warnings: [{ code: 'PLUGIN_UNSAFE_DIR', message: '.grok/skills resolves outside this project' }]
   })
-  assert.notEqual(view.find({ type: 'Callout', text: new RegExp(FR.lib.PLUGIN_EXCLUSIONS_FAILED) }), null)
+  assert.notEqual(view.find({ type: 'Callout', text: new RegExp(FR.lib.PLUGIN_UNSAFE_DIR) }), null)
   await expectClean(view)
 })
 
@@ -881,7 +910,7 @@ test('a switch of workspace drops the half-typed add', async () => {
   await view.type(SEARCH_FIELD, '~/x')
   await afterPause(view)
   assert.notEqual(view.find({ testId: 'read-path' }), null)
-  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
+  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false, network: false } }))
   assert.equal(view.find({ testId: 'read-path' }), null)
   assert.equal(view.valueOf(SEARCH_FIELD), '')
   await expectClean(view)
@@ -929,7 +958,7 @@ test('shows the inventory fallback, the unsafe dirs, the unreadable lock and the
       detected: [],
       unsafeDirs: ['.claude/skills'],
       lockUnreadable: true,
-      capabilities: { trash: false, folderPicker: true }
+      capabilities: { trash: 'missing', folderPicker: true }
     }
   })
   const { view } = await open({ state })
@@ -940,6 +969,34 @@ test('shows the inventory fallback, the unsafe dirs, the unreadable lock and the
   await expectClean(view)
 })
 
+test('the Trash banner follows the Trash status, and a ready Trash shows none', async () => {
+  const trashBanners = [FR.trashUnavailable, FR.trashUnverified('Windows'), FR.trashUnverified('Linux'), FR.trashNetwork]
+  const cases: [PanelState['capabilities']['trash'], string, string | null][] = [
+    ['missing', 'darwin', FR.trashUnavailable],
+    ['unverified', 'win32', FR.trashUnverified('Windows')],
+    ['unverified', 'linux', FR.trashUnverified('Linux')],
+    ['network', 'win32', FR.trashNetwork],
+    ['ready', 'darwin', null]
+  ]
+  for (const [trash, platform, banner] of cases) {
+    const state = stateOf({ skills: [HANDWRITTEN], overrides: { platform, capabilities: { trash, folderPicker: true } } })
+    const { view } = await open({ state })
+    for (const text of trashBanners) {
+      assert.equal(view.find({ type: 'Callout', text }) !== null, text === banner, `${trash} on ${platform}: ${text}`)
+    }
+    await expectClean(view)
+  }
+})
+
+test('a removal refused for an unverified Trash says so under the row, with the OS', async () => {
+  const state = stateOf({ skills: [HANDWRITTEN], overrides: { platform: 'win32', capabilities: { trash: 'unverified', folderPicker: true } } })
+  const { view } = await open({ state, start: () => ({ ok: false, error: { code: 'trash-unverified' } }) })
+  await view.press({ label: FR.removeSkillLabel('motion-context') })
+  await view.press({ text: FR.removeConfirm })
+  assert.notEqual(view.find({ type: 'Callout', text: FR.errors.trashUnverified('Windows') }), null)
+  await expectClean(view)
+})
+
 test('says which agents read a project dir only once trusted', async () => {
   const state = stateOf({ agents: ['claude', 'hermes', 'mistral-vibe'], skills: [diskSkill('alpha', [copyOf('.agents/skills', 'alpha')])] })
   const { view } = await open({ state })
@@ -947,21 +1004,6 @@ test('says which agents read a project dir only once trusted', async () => {
   await view.press({ label: FR.expandLabel('alpha') })
   assert.notEqual(view.find({ text: FR.trustHermes }), null)
   assert.notEqual(view.find({ text: FR.trustVibe }), null)
-  await expectClean(view)
-})
-
-test('marks an external link and refuses to remove a dir a link points to', async () => {
-  const linked = diskSkill('x', [
-    copyOf('.agents/skills', 'x', 'h1'),
-    { dir: '.claude/skills', path: `${ROOT}/.claude/skills/x`, kind: 'internal-link', realPath: `${ROOT}/.agents/skills/x`, hash: 'h1' },
-    { dir: '.grok/skills', path: `${ROOT}/.grok/skills/x`, kind: 'external-link', realPath: '/elsewhere/x', hash: 'h2' }
-  ])
-  const { view, log } = await open({ state: stateOf({ skills: [linked] }) })
-  await view.press({ label: FR.expandLabel('x') })
-  assert.notEqual(view.find({ text: FR.externalLink }), null)
-  // `.agents/skills/x` est la cible d'un lien de `.claude/skills` : le geste ne part pas, la ligne dit pourquoi.
-  assert.notEqual(view.find({ text: FR.pointsHere('.claude/skills') }), null)
-  assert.deepEqual(log.ops, [])
   await expectClean(view)
 })
 
@@ -1049,7 +1091,7 @@ test('every request that acts on a workspace carries the id of the one the panel
   // path.check, source.preview, puis op.start (une seule skill : ajout direct).
   assert.deepEqual(log.workspaceIds, ['identity:tool', 'identity:tool', 'identity:tool'])
   // Après un changement d'espace, les demandes suivantes portent le nouvel identifiant.
-  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false } }))
+  await view.post('state.changed', stateOf({ workspace: { status: 'ready', id: 'identity:other', name: 'other', branch: 'main', linkedWorktree: false, network: false } }))
   await view.type(SEARCH_FIELD, '~/y')
   await afterPause(view)
   assert.equal(log.workspaceIds.at(-1), 'identity:other')

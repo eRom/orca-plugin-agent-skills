@@ -4,23 +4,26 @@ import { existsSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { folderPicker } from './folder-picker'
-import { REAL_INVENTORY_DEPS } from './inventory'
 import { SKILLS_SH } from './search'
-import { realSkillsLib } from './skills-real'
+import { realLibAgents, realSkillsLib } from './skills-real'
 import { execRunner, systemTrasher } from './trash'
 import { activateWith } from './worker-core'
 
 export { deactivate } from './worker-core'
 
 export default function activate(orca: OrcaWorkerApi): Promise<void> {
+  const { trasher, status } = systemTrasher(process.platform, existsSync, execRunner)
   return activateWith(orca, {
     lib: realSkillsLib,
-    inventory: REAL_INVENTORY_DEPS,
-    trash: systemTrasher(process.platform, existsSync, execRunner),
+    inventory: { libAgents: realLibAgents, exists: existsSync, now: Date.now },
+    trash: trasher,
+    trashStatus: status,
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
     searchBase: SKILLS_SH,
     home: homedir(),
-    tmpdir: tmpdir()
+    tmpdir: tmpdir(),
+    platform: process.platform,
+    env: process.env
   })
 }

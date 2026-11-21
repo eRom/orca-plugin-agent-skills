@@ -3,25 +3,29 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { assert, mockHost, mountWorker, test } from 'orca/testing'
-import { EXCLUSIONS_KEY } from './exclusions'
+import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import { HIDDEN_AGENTS_KEY } from './hidden-agents'
 import type { InventoryDeps } from './inventory'
 import type { OpFinished, OpRequest, PanelState } from './protocol'
-import { fakeSkillsLib, fakeTrasher, tempDir, writeSkill, type FakeSkillsLib, type FakeTrasher } from './test-fixtures'
+import { fakeSkillsLib, fakeTrasher, sessionOf, tempDir, writeSkill, type FakeSkillsLib, type FakeTrasher } from './test-fixtures'
 import { activateWith, deactivate, type WorkerDeps } from './worker-core'
 
-/** Commandes des agents de Romain : Claude, Codex, Grok, OpenCode, Pi, Antigravity, DeepSeek Harness. */
-const ROMAIN_COMMANDS = ['claude', 'codex', 'grok', 'opencode', 'pi', 'agy', 'dsh-tui', 'dsh']
+/** Historique réel de Romain (Orca 1.4.268, 2026-11-21, `limit: 200`) : les agents des sessions rendues. */
+const ROMAIN_HISTORY = ['antigravity', 'claude', 'codex', 'grok', 'omp', 'opencode2', 'pi']
+/** DeepSeek Harness n'est pas dans l'historique d'Orca : il vient de son dossier de config. */
+const ROMAIN_DIRS = ['.dsh']
 type Probe = { calls: number }
 
-function inventoryDeps(found: readonly string[] = ROMAIN_COMMANDS): { deps: InventoryDeps; probe: Probe } {
+/** `libAgents` factice (compté) et `exists` factice : seuls les dossiers de `dirs` existent, sous `home`. */
+function inventoryDeps(home: string, lib: readonly string[], dirs: readonly string[]): { deps: InventoryDeps; probe: Probe } {
   const probe: Probe = { calls: 0 }
+  const existing = new Set(dirs.map((dir) => join(home, dir)))
   const deps: InventoryDeps = {
-    findCommands: async () => {
+    libAgents: async () => {
       probe.calls++
-      return new Set(found)
+      return new Set(lib)
     },
+    exists: (path) => existing.has(path),
     now: () => Date.now() + clockSkew
   }
   return { deps, probe }
@@ -43,11 +47,10 @@ const rowOf = (path: string, over: Partial<Row> = {}): Row => ({
 })
 const contextOf = (workspaceId: string) => ({ workspaceId, branch: 'feat/x', displayName: 'feature', terminals: [] })
 
-/** Leviers du test sur ce que le worker voit : stockage lent ou en panne, et les gestionnaires de requêtes (pour passer un `signal`). */
+/** Leviers du test sur ce que le worker voit : stockage lent, et les gestionnaires de requêtes (pour passer un `signal`). */
 type Controls = {
   /** Appelé après chaque lecture du stockage ; la valeur lue est rendue après l'attente (donc périmée). */
   afterStorageGet?: (key: string) => Promise<void>
-  failStorageSet: boolean
   /** Appelé avant que `workspace.list` réponde : de quoi faire attendre une requête à l'hôte. */
   beforeWorkspaceList?: () => Promise<void>
   handlers: Map<string, (input: unknown, context: { panel: unknown; signal: AbortSignal }) => Promise<unknown>>
@@ -68,7 +71,14 @@ type Setup = {
 
 type SetupOptions = {
   storage?: NonNullable<Parameters<typeof mockHost>[0]>['storage']
-  found?: readonly string[]
+  /** Agents des sessions que `agent.listSessions` rend (défaut : l'historique de Romain ; `[]` : historique vide). */
+  history?: readonly string[] | null
+  /** Identifiants skills.sh que la bibliothèque détecte (défaut : aucun). */
+  lib?: readonly string[]
+  /** Dossiers de config qui existent dans le home (défaut : `.dsh`, comme chez Romain). */
+  dirs?: readonly string[]
+  /** Capacités accordées à l'hôte simulé (défaut : celles du manifeste). */
+  capabilities?: readonly string[]
   deps?: Partial<WorkerDeps>
   rows?: (root: string) => Row[]
   /** Hôte déjà monté (pour un second `mountWorker` sur le même stockage). */
@@ -81,15 +91,22 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
   const home = tempDir('worker-home')
   const lib = fakeSkillsLib()
   const trash = fakeTrasher()
-  const { deps: inventory, probe } = inventoryDeps(options.found)
+  const { deps: inventory, probe } = inventoryDeps(home, options.lib ?? [], options.dirs ?? ROMAIN_DIRS)
+  const history = options.history === undefined ? ROMAIN_HISTORY : options.history
   let rows = options.rows ? options.rows(root) : [rowOf(root)]
   let focused = 'identity:x'
-  const controls: Controls = { failStorageSet: false, handlers: new Map() }
+  const controls: Controls = { handlers: new Map() }
   const host =
     options.host ??
     mockHost({
       storage: options.storage,
+      capabilities: options.capabilities,
       results: {
+        // `null` : l'hôte annonce `agent.listSessions` mais l'appel est rejeté en `unknown_method`.
+        'agent.listSessions': () => {
+          if (history === null) throw hostError('unknown_method')
+          return { sessions: history.map((agent, index) => sessionOf(agent, index)), truncated: false }
+        },
         'workspace.readContext': () => contextOf(focused),
         'workspace.list': async () => {
           await controls.beforeWorkspaceList?.()
@@ -101,6 +118,7 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
     lib,
     inventory,
     trash,
+    trashStatus: 'ready',
     pickFolder: null,
     fetch: async () => {
       throw new Error('the network must not be reached')
@@ -108,6 +126,8 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
     searchBase: 'https://skills.test',
     home,
     tmpdir: tempDir('worker-tmp'),
+    platform: 'darwin',
+    env: {},
     ...options.deps
   }
   // L'objet `orca` du harnais est figé : on en fait une copie dont le stockage et les gestionnaires passent par `controls`.
@@ -123,10 +143,6 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
                 const value = await orca.storage.get(key)
                 await controls.afterStorageGet?.(key)
                 return value
-              },
-              set: async (key: string, value: Parameters<typeof orca.storage.set>[1]) => {
-                if (controls.failStorageSet) throw new Error('storage is read-only')
-                return orca.storage.set(key, value)
               }
             },
             panels: {
@@ -179,8 +195,6 @@ async function settled(worker: Worker, count = 1): Promise<OpFinished> {
   return finishedOps(worker)[count - 1]!
 }
 
-const storedExclusions = (host: ReturnType<typeof mockHost>): unknown => host.data().storage[EXCLUSIONS_KEY]
-
 function agentState(state: PanelState, folder: string, agent: string): string | undefined {
   return state.rows.find((row) => row.folder === folder)?.agents.find((candidate) => candidate.agent === agent)?.state
 }
@@ -231,12 +245,16 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   writeSkill(setup.root, '.claude/skills', 'alpha')
   writeSkill(setup.root, '.agents/skills', 'beta')
   const state = await stateOf(setup.worker)
-  assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false })
+  assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false, network: false })
+  // Par ordre alphabétique des libellés : Antigravity, Claude, Codex, DeepSeek Harness, Grok, OMP, OpenCode 2, Pi.
   assert.deepEqual(
     state.agents.map((agent) => agent.id),
-    ['claude', 'codex', 'grok', 'opencode', 'dsh', 'pi', 'antigravity']
+    ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'omp', 'opencode2', 'pi']
   )
-  assert.deepEqual(state.agents[0], { id: 'claude', label: 'Claude', icon: 'agent-icons/claude.png', trust: null })
+  assert.deepEqual(
+    state.agents.find((agent) => agent.id === 'claude'),
+    { id: 'claude', label: 'Claude', icon: 'agent-icons/claude.png', trust: null }
+  )
   assert.equal(state.inventory, 'detected')
   assert.deepEqual(
     state.rows.map((row) => row.folder),
@@ -247,20 +265,21 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   assert.equal(agentState(state, 'beta', 'codex'), 'sees')
   assert.deepEqual(state.unsafeDirs, [])
   assert.equal(state.lockUnreadable, false)
-  assert.deepEqual(state.capabilities, { trash: true, folderPicker: true })
+  assert.deepEqual(state.capabilities, { trash: 'ready', folderPicker: true })
+  assert.equal(state.platform, 'darwin')
   assert.equal(state.busy, null)
   await setup.worker.deactivate()
 })
 
 test('trust-gated agents carry their trust marker', async () => {
-  const setup = await boot({ found: ['codex', 'hermes', 'vibe'] })
+  const setup = await boot({ history: ['codex', 'hermes'], lib: ['mistral-vibe'], dirs: [] })
   const state = await stateOf(setup.worker)
   assert.deepEqual(
     state.agents.map((agent) => [agent.id, agent.trust]),
     [
       ['codex', null],
-      ['mistral-vibe', 'vibe'],
-      ['hermes', 'hermes']
+      ['hermes', 'hermes'],
+      ['mistral-vibe', 'vibe']
     ]
   )
   await setup.worker.deactivate()
@@ -333,16 +352,16 @@ test('an unreadable storage fails the toggle instead of forgetting the hidden ag
   await setup.worker.deactivate()
 })
 
-test('a toggle reuses the known inventory, however old, instead of probing the shell again', async () => {
+test('a toggle reuses the known inventory, however old, instead of detecting again', async () => {
   const setup = await boot()
   await stateOf(setup.worker)
   const probes = setup.probe.calls
-  // Plus vieux que le délai de 10 s : `state.get` relancerait la sonde, la bascule non.
+  // Plus vieux que le délai de 10 s : `state.get` relancerait la détection, la bascule non.
   clockSkew = 60_000
   try {
     await setup.worker.request('agents.setHidden', { agent: 'grok', hidden: true })
     assert.equal(setup.probe.calls, probes)
-    // Témoin : une simple lecture, elle, relance bien la sonde sur un cache périmé.
+    // Témoin : une simple lecture, elle, relance bien la détection sur un cache périmé.
     await stateOf(setup.worker)
     assert.equal(setup.probe.calls, probes + 1)
   } finally {
@@ -352,7 +371,7 @@ test('a toggle reuses the known inventory, however old, instead of probing the s
 })
 
 test('refuses to hide the last visible agent', async () => {
-  const setup = await boot({ found: ['claude'] })
+  const setup = await boot({ history: ['claude'], dirs: [] })
   const state = await setup.worker.request('agents.setHidden', { agent: 'claude', hidden: true })
   assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
   assert.equal(state.inventory, 'detected')
@@ -360,8 +379,8 @@ test('refuses to hide the last visible agent', async () => {
   await setup.worker.deactivate()
 })
 
-test('falls back to .agents and .claude when no agent is detected', async () => {
-  const setup = await boot({ found: [] })
+test('nothing detected falls back to .agents and .claude', async () => {
+  const setup = await boot({ history: [], dirs: [] })
   const state = await stateOf(setup.worker)
   assert.equal(state.inventory, 'fallback')
   assert.deepEqual(state.agents, [])
@@ -371,6 +390,68 @@ test('falls back to .agents and .claude when no agent is detected', async () => 
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.deepEqual(setup.lib.calls.install[0]!.libAgents, ['universal', 'claude-code'])
+  await setup.worker.deactivate()
+})
+
+test('history source keeps hidden agents hidden', async () => {
+  const setup = await boot({ storage: { [HIDDEN_AGENTS_KEY]: ['grok'] } })
+  const state = await stateOf(setup.worker)
+  assert.equal(state.detected.find((agent) => agent.id === 'grok')?.hidden, true)
+  assert.ok(!state.agents.some((agent) => agent.id === 'grok'))
+  assert.ok(state.agents.some((agent) => agent.id === 'claude'))
+  assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=history agents=')))
+  await setup.worker.deactivate()
+})
+
+test('the agents of the history and the config dirs of the others are all detected', async () => {
+  const setup = await boot()
+  const state = await stateOf(setup.worker)
+  assert.deepEqual(
+    state.detected.map((agent) => agent.id),
+    ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'omp', 'opencode2', 'pi']
+  )
+  assert.ok(!setup.worker.logs.some((line) => line.includes('SECRET-TITLE')), 'no session title is logged')
+  await setup.worker.deactivate()
+})
+
+test('denied history falls back to config dirs and keeps hidden agents hidden', async () => {
+  const setup = await boot({
+    capabilities: ['workspace:read', 'storage:own'],
+    storage: { [HIDDEN_AGENTS_KEY]: ['codex'] },
+    lib: ['claude-code', 'codex'],
+    dirs: []
+  })
+  const state = await stateOf(setup.worker)
+  assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
+  assert.equal(state.detected.find((agent) => agent.id === 'codex')?.hidden, true)
+  assert.equal(state.inventory, 'detected')
+  assert.ok(setup.worker.logs.includes('history unavailable reason=capability_denied'))
+  assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=dirs agents=2')))
+  await setup.worker.deactivate()
+})
+
+test('an Orca without agent.listSessions (unknown_method) falls back to config dirs', async () => {
+  const setup = await boot({ history: null, lib: ['claude-code'], dirs: [] })
+  const state = await stateOf(setup.worker)
+  assert.deepEqual(state.agents.map((agent) => agent.id), ['claude'])
+  assert.ok(setup.worker.logs.includes('history unavailable reason=unknown_method'))
+  assert.ok(setup.worker.logs.some((line) => line.startsWith('inventory source=dirs agents=1')))
+  await setup.worker.deactivate()
+})
+
+test('the agent ids of the history are logged, never a title', async () => {
+  const setup = await boot({ history: ['codex', 'claude', 'claude'], dirs: [] })
+  await stateOf(setup.worker)
+  assert.ok(setup.worker.logs.includes('history agents=claude,codex'), 'catalogue ids, sorted, without duplicates')
+  assert.ok(!setup.worker.logs.some((line) => line.includes('SECRET-TITLE')))
+  await setup.worker.deactivate()
+})
+
+test('startup logs which environment variables arrived', async () => {
+  const setup = await boot({ deps: { env: { HOME: 'x', APPDATA: undefined, SECRET_TOKEN: 'never-logged' } } })
+  await stateOf(setup.worker)
+  assert.ok(setup.worker.logs.includes('env present=HOME'))
+  assert.ok(!setup.worker.logs.some((line) => line.includes('never-logged') || line.includes('SECRET_TOKEN')))
   await setup.worker.deactivate()
 })
 
@@ -454,11 +535,46 @@ test('add reports collisions before starting', async () => {
 })
 
 test('replace without a trash is refused before starting', async () => {
-  const setup = await boot({ deps: { trash: null } })
+  const setup = await boot({ deps: { trash: null, trashStatus: 'missing' } })
   writeSkill(setup.root, '.claude/skills', 'alpha')
   const previewId = await previewAdd(setup, ['alpha'])
   const answer = await setup.worker.request('op.start', ADD(previewId, ['alpha'], true))
   assert.deepEqual(answer, { ok: false, error: { code: 'no-trash' } })
+  await setup.worker.deactivate()
+})
+
+test('unverified trash refuses removal with its own code', async () => {
+  const setup = await boot({ deps: { trash: null, trashStatus: 'unverified', platform: 'linux' } })
+  writeSkill(setup.root, '.claude/skills', 'alpha')
+  assert.equal((await stateOf(setup.worker)).capabilities.trash, 'unverified')
+  const started = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
+  assert.equal(started.ok, true)
+  const finished = await settled(setup.worker)
+  assert.deepEqual(finished.ok ? null : finished.error, { code: 'trash-unverified' })
+  // Un remplacement est refusé avant de démarrer, avec le même code.
+  const previewId = await previewAdd(setup, ['alpha'])
+  assert.deepEqual(await setup.worker.request('op.start', ADD(previewId, ['alpha'], true)), { ok: false, error: { code: 'trash-unverified' } })
+  assert.ok(existsSync(join(setup.root, '.claude/skills/alpha')), 'the skill is still on disk')
+  assert.equal(setup.lib.calls.untrack.length, 0)
+  assert.equal(setup.lib.calls.install.length, 0)
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=remove folder=alpha error=trash-unverified')))
+  await setup.worker.deactivate()
+})
+
+test('network workspace refuses removal before any trash call', async () => {
+  const unc = '\\\\srv\\share\\project'
+  // La racine UNC n'existe pas sur ce Mac : `realpath` est simulé pour que l'espace soit prêt, comme sous Windows.
+  const setup = await boot({ deps: { platform: 'win32', realpath: async (path) => path }, rows: () => [rowOf(unc)] })
+  const state = await stateOf(setup.worker)
+  assert.equal(state.workspace.status === 'ready' ? state.workspace.network : null, true)
+  assert.equal(state.capabilities.trash, 'network')
+  // Une Corbeille est pourtant disponible (`fakeTrasher`) : le contexte du geste n'y a pas accès.
+  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })).ok, true)
+  const removed = await settled(setup.worker)
+  assert.deepEqual(removed.ok ? null : removed.error, { code: 'network-path' })
+  assert.deepEqual(setup.trash.trashed, [], 'the trasher is never called')
+  assert.equal(setup.lib.calls.untrack.length, 0)
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=remove folder=alpha error=network-path')))
   await setup.worker.deactivate()
 })
 
@@ -482,74 +598,34 @@ test('an add whose trial fails is a lib error before starting', async () => {
   await setup.worker.deactivate()
 })
 
-test('remove-dir excludes the agents that lost the skill, per project', async () => {
+test('propagate copies the skill into the target dir of the agent and it then sees it', async () => {
   const setup = await boot()
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  writeSkill(setup.root, '.grok/skills', 'alpha')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'sees')
-
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' }, workspaceId: WS })
-  assert.equal(answer.ok, true)
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['grok'] } })
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'excluded')
-  await setup.worker.deactivate()
-
-  // Un nouveau worker sur le même stockage : l'exclusion survit.
-  const again = await boot({ host: setup.host, root: setup.root })
-  assert.equal(agentState(await stateOf(again.worker), 'alpha', 'grok'), 'excluded')
-  await again.worker.deactivate()
-
-  // Un second espace du même projet (autre identifiant, même `projectId`) la voit aussi.
-  const second = tempDir('worker-second')
-  writeSkill(second, '.agents/skills', 'alpha')
-  setup.focus('identity:y', [rowOf(second, { id: 'identity:y' })])
-  const other = await boot({ host: setup.host, root: second })
-  assert.equal(agentState(await stateOf(other.worker), 'alpha', 'grok'), 'excluded')
-  await other.worker.deactivate()
-})
-
-test('removing the last copy from a folder clears the exclusions like a full remove', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'], beta: ['codex'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  await stateOf(setup.worker)
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.agents/skills' }, workspaceId: WS })
-  assert.equal(answer.ok, true)
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(storedExclusions(setup.host), { p1: { beta: ['codex'] } })
-  await setup.worker.deactivate()
-})
-
-test('reinstate copies into the target dir and lifts the exclusion', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'excluded')
-  const answer = await setup.worker.request('op.start', { op: { kind: 'reinstate', folder: 'alpha', agent: 'grok' }, workspaceId: WS })
+  writeSkill(setup.root, '.claude/skills', 'alpha')
+  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'absent')
+  const answer = await setup.worker.request('op.start', { op: { kind: 'propagate', folder: 'alpha', agents: ['grok'] }, workspaceId: WS })
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.match(await readFile(join(setup.root, '.grok/skills/alpha/SKILL.md'), 'utf8'), /alpha/)
-  assert.deepEqual(storedExclusions(setup.host), {})
   assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'sees')
   await setup.worker.deactivate()
 })
 
-test('propagate lifts the exclusion of the agents it feeds', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok', 'codex'] } } } })
+test('exclusions stored by v0.1 are ignored: the agent is absent, nothing is read as an error', async () => {
+  // Le nom de la clé de la v0.1 est gelé ici à dessein : le plugin ne la lit plus, ne la migre pas et ne l'efface pas.
+  const legacy = { p1: { alpha: ['grok'] } }
+  const setup = await boot({ storage: { 'exclusions.v1': legacy } })
   writeSkill(setup.root, '.claude/skills', 'alpha')
-  await setup.worker.request('op.start', { op: { kind: 'propagate', folder: 'alpha', agents: ['grok'] }, workspaceId: WS })
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['codex'] } })
-  await setup.worker.deactivate()
-})
-
-test('remove clears the exclusions of the skill', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'], beta: ['codex'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  await stateOf(setup.worker)
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(setup.trash.trashed, [join(setup.root, '.agents/skills/alpha')])
-  assert.deepEqual(storedExclusions(setup.host), { p1: { beta: ['codex'] } })
+  const state = await stateOf(setup.worker)
+  assert.equal(agentState(state, 'alpha', 'grok'), 'absent')
+  assert.ok(state.rows[0]!.missingFor.includes('grok'))
+  assert.deepEqual(
+    ['claude', 'grok'].map((agent) => [agent, agentState(state, 'alpha', agent)]),
+    [
+      ['claude', 'sees'],
+      ['grok', 'absent']
+    ]
+  )
+  assert.deepEqual(setup.host.data().storage['exclusions.v1'], legacy, 'the stored value is left untouched')
   await setup.worker.deactivate()
 })
 
@@ -758,38 +834,6 @@ test('a worker restarted mid-gesture posts a free state', async () => {
   await restarted.worker.deactivate()
 })
 
-test('a state read never writes the exclusions: one hidden by a copy in another worktree comes back when that copy goes', async () => {
-  // Codex est exclu au stockage mais voit `alpha` sur ce disque (copie faite dans un autre worktree du projet).
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['codex'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  // Un stockage qui refuse toute écriture : une lecture d'état qui voudrait écrire échouerait.
-  setup.controls.failStorageSet = true
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'sees')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'sees')
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['codex'] } })
-
-  // La copie qui le nourrissait disparaît : l'exclusion, jamais levée, redevient visible.
-  rmSync(join(setup.root, '.agents/skills/alpha'), { recursive: true })
-  writeSkill(setup.root, '.claude/skills', 'alpha')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'excluded')
-  await setup.worker.deactivate()
-})
-
-test('two gestures in a row each keep the exclusions the other one wrote', async () => {
-  const setup = await boot()
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  writeSkill(setup.root, '.grok/skills', 'alpha')
-  writeSkill(setup.root, '.agents/skills', 'beta')
-  writeSkill(setup.root, '.claude/skills', 'beta')
-  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' }, workspaceId: WS })).ok, true)
-  await settled(setup.worker, 1)
-  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'beta', dir: '.claude/skills' }, workspaceId: WS })).ok, true)
-  await settled(setup.worker, 2)
-  const stored = storedExclusions(setup.host) as { p1: Record<string, string[]> }
-  assert.deepEqual(Object.keys(stored.p1).sort(), ['alpha', 'beta'])
-  await setup.worker.deactivate()
-})
-
 test('a preview that waited on the host cannot release the source an add took meanwhile', async () => {
   const setup = await boot()
   const first = setup.lib.source([{ name: 'alpha' }])
@@ -956,22 +1000,6 @@ test('an add that throws after its trial disposes the trial and keeps the previe
   await setup.worker.deactivate()
 })
 
-test('a gesture whose exclusions cannot be written still succeeds, with a warning', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  setup.controls.failStorageSet = true
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
-  const finished = await settled(setup.worker)
-  assert.equal(finished.ok, true)
-  assert.deepEqual(
-    finished.warnings.map((warning) => warning.code),
-    ['PLUGIN_EXCLUSIONS_FAILED']
-  )
-  assert.ok(setup.worker.logs.some((line) => line.includes('PLUGIN_EXCLUSIONS_FAILED')))
-  assert.equal((await stateOf(setup.worker)).busy, null)
-  await setup.worker.deactivate()
-})
-
 test('folder.pick returns the chosen path, null when cancelled or unavailable', async () => {
   const chosen = await boot({ deps: { pickFolder: async () => '/Users/me/skills' } })
   assert.deepEqual(await chosen.worker.request('folder.pick'), { path: '/Users/me/skills' })
@@ -1117,5 +1145,35 @@ test('a source inside a managed folder of the project is refused before it is re
   const outside = join(setup.root, 'my-skills')
   mkdirSync(outside)
   assert.equal((await setup.worker.request('source.preview', { kind: 'path', text: outside, workspaceId: WS })).ok, true)
+  await setup.worker.deactivate()
+})
+
+test('a WSL workspace on Windows is explained, never scanned, and its shape is logged only when it changes', async () => {
+  const setup = await boot({ deps: { platform: 'win32' } })
+  setup.focus('identity:x', [rowOf('/home/r/p')])
+  const first = await stateOf(setup.worker)
+  assert.deepEqual(first.workspace, { status: 'wsl' })
+  assert.deepEqual(first.rows, [])
+  await stateOf(setup.worker)
+  assert.deepEqual(
+    setup.worker.logs.filter((line) => line.startsWith('workspace root shape=')),
+    ['workspace root shape=posix'],
+    'an unchanged shape is not logged again, and the path is never logged'
+  )
+  await setup.worker.deactivate()
+})
+
+test('refocusing from a drive-letter workspace to a UNC one logs the new shape', async () => {
+  const setup = await boot({ deps: { platform: 'win32' } })
+  setup.focus('identity:x', [rowOf('C:\\dev\\p')])
+  await stateOf(setup.worker)
+  await stateOf(setup.worker)
+  setup.focus('identity:x', [rowOf('\\\\srv\\share\\p')])
+  await stateOf(setup.worker)
+  await stateOf(setup.worker)
+  assert.deepEqual(
+    setup.worker.logs.filter((line) => line.startsWith('workspace root shape=')),
+    ['workspace root shape=drive', 'workspace root shape=unc']
+  )
   await setup.worker.deactivate()
 })

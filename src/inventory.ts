@@ -1,144 +1,56 @@
-// Inventaire des agents installés : commandes cherchées par un shell de login, rien d'autre. Les fichiers
-// privés d'Orca ne sont jamais lus (demande de la revue de l'annuaire, issue #1) : un agent installé mais
-// désactivé dans Orca est donc retenu. Reprend la règle d'installation d'Orca
-// (src/main/preflight/installed-agent-detection.ts) : une commande de l'agent trouvée, dépendances présentes.
-import { accessSync, constants } from 'node:fs'
-import { spawn } from 'node:child_process'
+// Inventaire des agents installés, sans shell. Deux sources, dans cet ordre (spec §5.1) :
+// 1. l'historique d'Orca (`agent.listSessions`, voir `history.ts`) pour les agents qu'il sait lire (`HISTORY_AGENTS`) ;
+// 2. les dossiers de config : la détection de la bibliothèque `skills` (`libIds`) et le complément du plugin
+//    (`configDirs`, docs/agent-skill-dirs.md), pour les autres agents ou quand l'historique est vide.
+// Les fichiers privés d'Orca ne sont jamais lus (demande de la revue de l'annuaire, issue #1).
 import { join } from 'node:path'
-import { AGENTS } from './agents'
-import { shellQuote } from './shell-words'
+import { AGENTS, HISTORY_AGENTS } from './agents'
 
-export type Inventory = { agents: string[]; detectedAt: number }
-export type ShellRunner = (script: string) => Promise<{ ok: boolean; stdout: string }>
+export type DetectionSource = 'history' | 'dirs'
+export type Inventory = { agents: string[]; source: DetectionSource; detectedAt: number }
 export type InventoryDeps = {
-  /** `onFallback` est appelé quand le shell de login a échoué et que la recherche est retombée sur le PATH. */
-  findCommands: (tokens: readonly string[], onFallback?: () => void) => Promise<ReadonlySet<string>>
+  /** Identifiants skills.sh des agents que la bibliothèque détecte depuis `home`. */
+  libAgents: (home: string) => Promise<ReadonlySet<string>>
+  exists: (path: string) => boolean
   now: () => number
 }
 
-const PROBE_MARKER = '__AGENT_PROFILES__'
-const SHELL_TIMEOUT_MS = 15_000
-
-/** Tous les jetons à chercher : commandes et dépendances de la table, sans doublon. */
-export function probeTokens(): string[] {
-  const tokens = new Set<string>()
-  for (const agent of AGENTS) {
-    for (const command of agent.commands) tokens.add(command)
-    for (const command of agent.requiredCommands) tokens.add(command)
-  }
-  return [...tokens]
+/**
+ * Agents installés, dans l'ordre du catalogue d'Orca. Un historique non vide (après retrait des identifiants inconnus)
+ * décide seul pour les agents qu'il sait voir ; les dossiers décident pour les autres, et pour tous quand il est vide.
+ * Un identifiant du catalogue rendu par l'historique compte même hors `HISTORY_AGENTS` : la liste d'Orca peut grandir
+ * avant la nôtre.
+ */
+export function installedAgents(
+  history: ReadonlySet<string> | null,
+  lib: ReadonlySet<string>,
+  hasConfigDir: (homeRelative: string) => boolean
+): { agents: string[]; source: DetectionSource } {
+  const seen = new Set<string>()
+  for (const spec of AGENTS) if (history?.has(spec.id)) seen.add(spec.id)
+  const useHistory = seen.size > 0
+  const agents = AGENTS.filter((spec) => {
+    if (useHistory && seen.has(spec.id)) return true
+    if (useHistory && HISTORY_AGENTS.has(spec.id)) return false
+    return spec.libIds.some((id) => lib.has(id)) || spec.configDirs.some((dir) => hasConfigDir(dir))
+  }).map((spec) => spec.id)
+  return { agents, source: useHistory ? 'history' : 'dirs' }
 }
 
-/** Agents installés, dans l'ordre du catalogue d'Orca. Les `requiredCommands` s'appliquent toujours. */
-export function installedAgents(found: ReadonlySet<string>): string[] {
-  return AGENTS.filter(
-    (agent) =>
-      agent.commands.some((command) => found.has(command)) && agent.requiredCommands.every((command) => found.has(command))
-  ).map((agent) => agent.id)
-}
-
-/** Une détection complète : l'inventaire, et les commandes trouvées pour le recalculer plus tard sans shell. */
+/** Une détection complète. Une bibliothèque en échec vaut un ensemble vide : l'historique garde tout son effet. */
 export async function detectAgents(
   deps: InventoryDeps,
-  onFallback?: () => void
-): Promise<{ inventory: Inventory; found: ReadonlySet<string> }> {
-  const found = await deps.findCommands(probeTokens(), onFallback)
-  return { inventory: { agents: installedAgents(found), detectedAt: deps.now() }, found }
-}
-
-export async function listInstalledAgents(deps: InventoryDeps): Promise<Inventory> {
-  return (await detectAgents(deps)).inventory
-}
-
-/** Ne lit que ce qui se trouve entre les deux premiers marqueurs : le reste est du bruit de profil shell. */
-export function parseShellProbe(stdout: string): Set<string> | null {
-  const first = stdout.indexOf(PROBE_MARKER)
-  if (first === -1) return null
-  const bodyStart = first + PROBE_MARKER.length
-  const second = stdout.indexOf(PROBE_MARKER, bodyStart)
-  if (second === -1) return null
-  const names = new Set<string>()
-  for (const line of stdout.slice(bodyStart, second).split('\n')) {
-    const equals = line.indexOf('=')
-    if (equals > 0) names.add(line.slice(0, equals))
-  }
-  return names
-}
-
-function probeScript(names: readonly string[]): string {
-  const quoted = names.map(shellQuote).join(' ')
-  return `print -r -- ${PROBE_MARKER}; for c in ${quoted}; do p=$(whence -p -- "$c" 2>/dev/null) && print -r -- "$c=$p"; done; print -r -- ${PROBE_MARKER}`
-}
-
-function isExecutable(path: string): boolean {
-  try {
-    accessSync(path, constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** Repli sans shell : cherche chaque nom dans les dossiers du PATH. */
-function searchPath(names: readonly string[], pathEnv: string): Set<string> {
-  const directories = pathEnv.split(':').filter((directory) => directory !== '')
-  return new Set(names.filter((name) => directories.some((directory) => isExecutable(join(directory, name)))))
-}
-
-/** Lance le script dans un shell de login (le PATH de l'utilisateur) ; `ok: false` en cas d'échec ou de délai dépassé. */
-const runLoginShell: ShellRunner = (script) =>
-  new Promise((resolve) => {
-    let stdout = ''
-    let settled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const finish = (ok: boolean) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({ ok, stdout })
-    }
-    try {
-      const child = spawn('/bin/zsh', ['-ilc', script], { stdio: ['ignore', 'pipe', 'ignore'] })
-      timer = setTimeout(() => {
-        // SIGKILL : un zsh interactif ignore SIGTERM et resterait coincé après le délai.
-        child.kill('SIGKILL')
-        finish(false)
-      }, SHELL_TIMEOUT_MS)
-      child.stdout?.on('data', (chunk) => {
-        stdout += chunk.toString()
-      })
-      child.on('error', () => finish(false))
-      child.on('close', (code) => finish(code === 0))
-    } catch {
-      finish(false)
-    }
-  })
-
-export async function findCommands(
-  tokens: readonly string[],
-  runShell: ShellRunner = runLoginShell,
-  pathEnv: string = process.env.PATH ?? '',
-  onFallback?: () => void
-): Promise<ReadonlySet<string>> {
-  const found = new Set<string>()
-  const names: string[] = []
-  for (const token of new Set(tokens)) {
-    if (token.includes('/')) {
-      if (isExecutable(token)) found.add(token)
-    } else {
-      names.push(token)
-    }
-  }
-  if (names.length === 0) return found
-  const probe = await runShell(probeScript(names))
-  const parsed = probe.ok ? parseShellProbe(probe.stdout) : null
-  if (parsed === null) onFallback?.()
-  const resolved = parsed ?? searchPath(names, pathEnv)
-  for (const name of resolved) found.add(name)
-  return found
-}
-
-export const REAL_INVENTORY_DEPS: InventoryDeps = {
-  findCommands: (tokens, onFallback) => findCommands(tokens, undefined, undefined, onFallback),
-  now: Date.now
+  home: string,
+  history: () => Promise<ReadonlySet<string> | null>,
+  log: (line: string) => void
+): Promise<Inventory> {
+  const [seen, lib] = await Promise.all([
+    history(),
+    deps.libAgents(home).catch((): ReadonlySet<string> => {
+      log('config dirs: library detection failed')
+      return new Set()
+    })
+  ])
+  const { agents, source } = installedAgents(seen, lib, (dir) => deps.exists(join(home, dir)))
+  return { agents, source, detectedAt: deps.now() }
 }

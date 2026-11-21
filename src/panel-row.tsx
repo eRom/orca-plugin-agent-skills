@@ -1,11 +1,10 @@
 // Une skill du projet : nom, source, pastilles d'agents, bandeaux, puis le détail déplié.
-// Les composants du catalogue n'ont ni survol ni image cliquable : les gestes par agent et par dossier vivent dans la ligne dépliée.
+// Un seul retrait (l'icône corbeille) ; la ligne dépliée ne porte que le détail : description, versions divergentes, approbations.
 import { Box, Button, Callout, Code, env, IconButton, Image, read, Row, Spinner, Stack, Text } from 'orca'
 import { describeErrorLines, type Messages } from './copy'
 import { dimIcon, themedIcon } from './icons'
 import { askConfirmation, cancelConfirmation, expandedRows, notes, startOp, toggleChips, toggleExpanded, unfoldedChips, type Confirm, type Note } from './panel-state'
 import type { AgentView, OpRequest, PanelState } from './protocol'
-import type { ManagedDir } from './skill-dirs'
 import type { SkillRow } from './visibility'
 
 /** Au-delà de ce nombre d'agents actifs, les pastilles se replient en un résumé (seuil choisi : ce que la largeur tient). */
@@ -24,14 +23,14 @@ export type RowContext = {
 }
 
 /** Les lignes d'une note, trois au plus ; quand l'ancienne version est à la Corbeille, cette ligne reste. */
-export function noteLines(note: Note, m: Messages): string[] {
+export function noteLines(note: Note, m: Messages, platform: string): string[] {
   const error = note.error
-  const lines = error ? describeErrorLines(error, m) : note.message === null ? [] : [note.message]
+  const lines = error ? describeErrorLines(error, m, platform) : note.message === null ? [] : [note.message]
   return error?.trashed && lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES - 1), lines[lines.length - 1]!] : lines.slice(0, MAX_LINES)
 }
 
-function warningLines(note: Note, m: Messages): string[] {
-  return note.warnings.flatMap((warning) => describeErrorLines(warning, m)).slice(0, MAX_LINES)
+function warningLines(note: Note, m: Messages, platform: string): string[] {
+  return note.warnings.flatMap((warning) => describeErrorLines(warning, m, platform)).slice(0, MAX_LINES)
 }
 
 function renderLines(key: string, lines: string[]) {
@@ -47,10 +46,10 @@ function renderLines(key: string, lines: string[]) {
 }
 
 /** Erreur et avertissements d'un geste, en bandeaux ; rien quand la note est vide. */
-export function renderNote(key: string, note: Note | null | undefined, m: Messages) {
+export function renderNote(key: string, note: Note | null | undefined, m: Messages, platform: string) {
   if (!note) return null
-  const errors = noteLines(note, m)
-  const warnings = warningLines(note, m)
+  const errors = noteLines(note, m, platform)
+  const warnings = warningLines(note, m, platform)
   if (errors.length === 0 && warnings.length === 0) return null
   return (
     <Stack key={key} gap="xs">
@@ -78,7 +77,17 @@ function renderSource(row: SkillRow, m: Messages) {
   }
 }
 
-/** Une pastille par agent actif : pleine s'il voit la skill, estompée sinon ; un agent exclu n'en a pas (ligne à part). */
+/** La mention « lien externe », sous la source de la ligne repliée. */
+function renderExternalTag(row: SkillRow, m: Messages) {
+  if (!row.external) return null
+  return (
+    <Text key={`external-${row.folder}`} muted size="xs">
+      {m.externalLink}
+    </Text>
+  )
+}
+
+/** Une pastille par agent actif : pleine s'il voit la skill, estompée sinon. */
 function renderChips(row: SkillRow, ctx: RowContext) {
   const { state, m } = ctx
   const scheme = env.theme.colorScheme
@@ -99,7 +108,7 @@ function renderChips(row: SkillRow, ctx: RowContext) {
     <Box key={`chips-${row.folder}`} direction="row" wrap gap="xs" align="center">
       {row.agents.flatMap((agent) => {
         const view = views.get(agent.agent)
-        if (!view || agent.state === 'excluded') return []
+        if (!view) return []
         const sees = agent.state === 'sees'
         return [
           <Box key={`chip-${row.folder}-${agent.agent}`} width={CHIP_SLOT_WIDTH} shrink={false} align="center" justify="center">
@@ -127,11 +136,9 @@ function progressLabel(op: OpRequest, m: Messages): string {
     case 'add':
       return m.adding
     case 'remove':
-    case 'remove-dir':
       return m.removing
     case 'propagate':
     case 'keep':
-    case 'reinstate':
       return m.copying
   }
 }
@@ -147,32 +154,14 @@ export function renderProgress(key: string, label: string) {
   )
 }
 
-/** Agents qui perdent la skill, et ceux qui la voient encore par un autre dossier, quand on retire `dir`. */
-function sightAfterRemoving(row: SkillRow, dir: ManagedDir, state: PanelState): { lost: string[]; kept: string[] } {
-  const lost: string[] = []
-  const kept: string[] = []
-  for (const agent of row.agents) {
-    if (!agent.via.includes(dir)) continue
-    ;(agent.via.length === 1 ? lost : kept).push(labelOf(state, agent.agent))
-  }
-  return { lost, kept }
-}
-
 function renderConfirm(row: SkillRow, ctx: RowContext) {
-  const { confirm, m, state } = ctx
-  if (!confirm || confirm.kind === 'replace' || confirm.folder !== row.folder) return null
-  const op: OpRequest = confirm.kind === 'remove' ? { kind: 'remove', folder: row.folder } : { kind: 'remove-dir', folder: row.folder, dir: confirm.dir }
-  const lines =
-    confirm.kind === 'remove'
-      ? [m.removeAsk(row.displayName)]
-      : (() => {
-          const { lost, kept } = sightAfterRemoving(row, confirm.dir, state)
-          return [m.removeDirAsk(row.displayName, confirm.dir), ...(lost.length > 0 ? [m.losesSight(lost.join(', '))] : []), ...(kept.length > 0 ? [m.keepsSight(kept.join(', '))] : [])]
-        })()
+  const { confirm, m } = ctx
+  if (!confirm || confirm.kind !== 'remove' || confirm.folder !== row.folder) return null
+  const op: OpRequest = { kind: 'remove', folder: row.folder }
   return (
     <Callout key={`confirm-${row.folder}`} tone="danger">
       <Stack gap="sm">
-        {renderLines(`confirm-lines-${row.folder}`, lines)}
+        {renderLines(`confirm-lines-${row.folder}`, [m.removeAsk(row.displayName)])}
         <Row gap="sm">
           <Button variant="outline" size="sm" onPress={cancelConfirmation}>
             {m.cancel}
@@ -186,45 +175,15 @@ function renderConfirm(row: SkillRow, ctx: RowContext) {
   )
 }
 
-function renderCopy(row: SkillRow, copy: SkillRow['copies'][number], ctx: RowContext) {
-  const { m, state, busy } = ctx
-  const linked = copy.linkedFrom.length > 0
-  return (
-    <Box key={`copy-${row.folder}-${copy.dir}`} gap="xs">
-      <Row justify="between" align="center" gap="sm">
-        <Box key={`copy-name-${row.folder}-${copy.dir}`} direction="row" align="center" gap="xs" grow minWidth={0}>
-          <Code>{copy.dir}</Code>
-          {copy.kind === 'external-link' ? (
-            <Text muted size="xs">
-              {m.externalLink}
-            </Text>
-          ) : null}
-        </Box>
-        <Box key={`copy-remove-${row.folder}-${copy.dir}`} shrink={false}>
-          <Button variant="outline" size="sm" disabled={busy !== null || linked} onPress={() => askConfirmation({ kind: 'remove-dir', folder: row.folder, dir: copy.dir })}>
-            {m.removeFromDir}
-          </Button>
-        </Box>
-      </Row>
-      <Text muted size="xs">
-        {copy.feeds.length > 0 ? m.readBy(labelsOf(state, copy.feeds)) : m.readByNobody}
-      </Text>
-      {linked ? (
-        <Text muted size="xs">
-          {m.pointsHere(copy.linkedFrom.join(', '))}
-        </Text>
-      ) : null}
-    </Box>
-  )
-}
-
 function renderVersions(row: SkillRow, ctx: RowContext) {
   const { m, state, busy } = ctx
   if (row.versions.length < 2) return null
   return (
     <Stack key={`versions-${row.folder}`} gap="sm">
       {row.versions.map((version, index) => {
-        const feeds = [...new Set(row.copies.filter((copy) => version.dirs.includes(copy.dir)).flatMap((copy) => copy.feeds))]
+        // L'ordre de `row.agents` (alphabétique par libellé), pas celui des dossiers.
+        const readers = new Set(row.copies.filter((copy) => version.dirs.includes(copy.dir)).flatMap((copy) => copy.feeds))
+        const feeds = row.agents.map((entry) => entry.agent).filter((agent) => readers.has(agent))
         return (
           <Box key={`version-${row.folder}-${version.hash}`} border radius="sm" padding="sm" gap="xs">
             <Text weight="medium" size="xs">
@@ -232,7 +191,14 @@ function renderVersions(row: SkillRow, ctx: RowContext) {
             </Text>
             <Box key={`version-dirs-${row.folder}-${version.hash}`} direction="row" wrap gap="xs">
               {version.dirs.map((dir) => (
-                <Code key={dir}>{dir}</Code>
+                <Box key={dir} direction="row" align="center" gap="xs">
+                  <Code>{dir}</Code>
+                  {row.copies.find((copy) => copy.dir === dir)?.kind === 'external-link' ? (
+                    <Text muted size="xs">
+                      {m.externalLink}
+                    </Text>
+                  ) : null}
+                </Box>
               ))}
             </Box>
             <Text muted size="xs">
@@ -250,33 +216,26 @@ function renderVersions(row: SkillRow, ctx: RowContext) {
   )
 }
 
-/** Le détail : description, dossiers, gestes par agent, versions, approbations. */
+/** Les approbations à rappeler : celles des agents actifs de la ligne qui en demandent une. */
+function trustsOf(row: SkillRow, state: PanelState) {
+  return new Set(state.agents.filter((agent) => row.agents.some((entry) => entry.agent === agent.id)).flatMap((agent) => (agent.trust ? [agent.trust] : [])))
+}
+
+/** Vrai quand le détail montre quelque chose : sinon le bouton de dépli n'a rien à ouvrir. */
+function hasDetails(row: SkillRow, state: PanelState): boolean {
+  return row.description !== '' || row.versions.length > 1 || trustsOf(row, state).size > 0
+}
+
+/** Le détail : description, versions divergentes, approbations. */
 function renderDetails(row: SkillRow, ctx: RowContext) {
-  const { m, state, busy } = ctx
-  const absent = row.agents.filter((agent) => agent.state === 'absent')
-  const excluded = row.agents.filter((agent) => agent.state === 'excluded')
-  const trusts = new Set(state.agents.filter((agent) => row.agents.some((entry) => entry.agent === agent.id && entry.state !== 'excluded')).flatMap((agent) => (agent.trust ? [agent.trust] : [])))
+  const { m, state } = ctx
+  const trusts = trustsOf(row, state)
   return (
     <Stack key={`details-${row.folder}`} gap="sm">
       {row.description !== '' ? (
         <Text muted size="xs">
           {row.description}
         </Text>
-      ) : null}
-      {row.copies.map((copy) => renderCopy(row, copy, ctx))}
-      {absent.length + excluded.length > 0 ? (
-        <Box key={`agent-actions-${row.folder}`} direction="row" wrap gap="xs">
-          {absent.map((agent) => (
-            <Button key={`add-${agent.agent}`} variant="outline" size="sm" disabled={busy !== null} onPress={() => startOp({ kind: 'propagate', folder: row.folder, agents: [agent.agent] })}>
-              {m.addFor(labelOf(state, agent.agent))}
-            </Button>
-          ))}
-          {excluded.map((agent) => (
-            <Button key={`reinstate-${agent.agent}`} variant="outline" size="sm" disabled={busy !== null} onPress={() => startOp({ kind: 'reinstate', folder: row.folder, agent: agent.agent })}>
-              {m.reinstate(labelOf(state, agent.agent))}
-            </Button>
-          ))}
-        </Box>
       ) : null}
       {renderVersions(row, ctx)}
       {trusts.has('hermes') ? (
@@ -295,10 +254,10 @@ function renderDetails(row: SkillRow, ctx: RowContext) {
 
 export function renderRow(row: SkillRow, ctx: RowContext) {
   const { m, state, busy } = ctx
-  const open = read(expandedRows).includes(row.folder)
+  const details = hasDetails(row, state)
+  const open = details && read(expandedRows).includes(row.folder)
   const note = read(notes)[row.folder]
   const missing = row.agents.filter((agent) => agent.state === 'absent').map((agent) => labelOf(state, agent.agent))
-  const excluded = row.agents.filter((agent) => agent.state === 'excluded').map((agent) => labelOf(state, agent.agent))
   // Seule la ligne visée par le geste montre sa progression (un ajout n'a pas de ligne : son progrès est sous le champ).
   const running = busy !== null && busy.kind !== 'add' && busy.folder === row.folder ? busy : null
   return (
@@ -309,15 +268,18 @@ export function renderRow(row: SkillRow, ctx: RowContext) {
             {row.displayName}
           </Text>
           {renderSource(row, m)}
+          {renderExternalTag(row, m)}
         </Box>
         <Box key={`actions-${row.folder}`} direction="row" gap="xs" shrink={false}>
-          <IconButton
-            icon={open ? 'collapse' : 'expand'}
-            label={open ? m.collapseLabel(row.displayName) : m.expandLabel(row.displayName)}
-            variant="ghost"
-            size="sm"
-            onPress={() => toggleExpanded(row.folder)}
-          />
+          {details ? (
+            <IconButton
+              icon={open ? 'collapse' : 'expand'}
+              label={open ? m.collapseLabel(row.displayName) : m.expandLabel(row.displayName)}
+              variant="ghost"
+              size="sm"
+              onPress={() => toggleExpanded(row.folder)}
+            />
+          ) : null}
           <IconButton
             icon="delete"
             label={m.removeSkillLabel(row.displayName)}
@@ -329,11 +291,6 @@ export function renderRow(row: SkillRow, ctx: RowContext) {
         </Box>
       </Row>
       {renderChips(row, ctx)}
-      {excluded.length > 0 ? (
-        <Text muted size="xs">
-          {m.excludedFor(excluded.join(', '))}
-        </Text>
-      ) : null}
       {missing.length > 0 ? (
         <Callout tone="warning">
           <Stack gap="sm">
@@ -353,7 +310,7 @@ export function renderRow(row: SkillRow, ctx: RowContext) {
       ) : null}
       {running ? renderProgress(`progress-${row.folder}`, progressLabel(running, m)) : null}
       {renderConfirm(row, ctx)}
-      {renderNote(`note-${row.folder}`, note, m)}
+      {renderNote(`note-${row.folder}`, note, m, ctx.state.platform)}
       {open ? renderDetails(row, ctx) : null}
     </Box>
   )

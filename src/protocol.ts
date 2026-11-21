@@ -3,6 +3,7 @@ import type { OpError } from './operations'
 import type { SearchError, SearchHit } from './search'
 import type { ManagedDir } from './skill-dirs'
 import type { LibDiagnostic } from './skills-lib'
+import type { TrashStatus } from './trash'
 import type { SkillRow, SourceLabel } from './visibility'
 import type { WorkspaceView } from './workspace'
 
@@ -20,7 +21,9 @@ export type PanelState = {
   rows: SkillRow[]
   unsafeDirs: ManagedDir[]
   lockUnreadable: boolean
-  capabilities: { trash: boolean; folderPicker: boolean }
+  capabilities: { trash: TrashStatus; folderPicker: boolean }
+  /** `process.platform` du worker : le panneau en tire les formes de chemin qu'il reconnaît dans le champ. */
+  platform: string
   busy: OpRequest | null
 }
 
@@ -38,8 +41,6 @@ export type OpRequest =
   | { kind: 'propagate'; folder: string; agents: string[] }
   | { kind: 'keep'; folder: string; hash: string }
   | { kind: 'remove'; folder: string }
-  | { kind: 'remove-dir'; folder: string; dir: ManagedDir }
-  | { kind: 'reinstate'; folder: string; agent: string }
 
 /** `opId` : identifie le geste dont `op.finished` rendra compte, après la réponse. */
 export type StartAnswer = { ok: true; opId: string } | { ok: false; error: OpError }

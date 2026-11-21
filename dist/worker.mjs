@@ -6979,184 +6979,6 @@ function folderPicker(platform, run) {
   };
 }
 
-// src/inventory.ts
-import { accessSync, constants } from "node:fs";
-import { spawn } from "node:child_process";
-import { join } from "node:path";
-
-// src/agents.ts
-function agent(id, label, commands, overrides = {}) {
-  return {
-    id,
-    label,
-    commands,
-    requiredCommands: [],
-    icon: `agent-icons/${id}.png`,
-    ...overrides
-  };
-}
-var AGENTS = [
-  agent("claude", "Claude", ["claude"]),
-  agent("claude-agent-teams", "Claude Agent Teams", ["orca", "orca-dev", "orca-ide"], { requiredCommands: ["claude"] }),
-  agent("openclaude", "OpenClaude", ["openclaude"]),
-  agent("codex", "Codex", ["codex"]),
-  agent("grok", "Grok", ["grok"]),
-  agent("copilot", "GitHub Copilot", ["copilot"]),
-  agent("opencode2", "OpenCode 2", ["opencode2"]),
-  agent("opencode", "OpenCode", ["opencode"]),
-  agent("mimo-code", "MiMo Code", ["mimo"]),
-  agent("ante", "Ante", ["ante"]),
-  agent("trae", "Trae", ["traecli"]),
-  agent("muse", "Muse", ["muse"]),
-  agent("dsh", "DeepSeek Harness", ["dsh-tui", "dst"], { requiredCommands: ["dsh"] }),
-  agent("qoder", "Qoder CLI", ["qodercli", "qoder"]),
-  agent("qoder-cn", "Qoder CLI China", ["qoderclicn", "qodercn"]),
-  agent("zcode", "ZCode", ["zcode"]),
-  agent("pi", "Pi", ["pi"]),
-  agent("omp", "OMP", ["omp"]),
-  agent("prime-agent", "Prime Agent", ["prime-agent"]),
-  agent("gemini", "Gemini", ["gemini"]),
-  agent("antigravity", "Antigravity", ["agy"]),
-  agent("aider", "Aider", ["aider"]),
-  agent("goose", "Goose", ["goose"]),
-  agent("amp", "Amp", ["amp"]),
-  agent("kilo", "Kilocode", ["kilo"]),
-  agent("kiro", "Kiro", ["kiro-cli"]),
-  agent("crush", "Charm", ["crush"]),
-  agent("aug", "Auggie", ["auggie"]),
-  agent("autohand", "Autohand Code", ["autohand"]),
-  agent("cline", "Cline", ["cline"]),
-  agent("codebuff", "Codebuff", ["codebuff"]),
-  agent("freebuff", "Freebuff", ["freebuff"]),
-  agent("command-code", "Command Code", ["command-code"]),
-  agent("continue", "Continue", ["cn"]),
-  agent("cursor", "Cursor", ["cursor-agent"]),
-  agent("droid", "Droid", ["droid"]),
-  agent("kimi", "Kimi", ["kimi", "kimi-code"]),
-  agent("mistral-vibe", "Mistral Vibe", ["vibe", "mistral-vibe"]),
-  agent("qwen-code", "Qwen Code", ["qwen"]),
-  agent("rovo", "Rovo Dev", ["acli"]),
-  agent("hermes", "Hermes", ["hermes"]),
-  agent("devin", "Devin", ["devin"]),
-  agent("openclaw", "OpenClaw", ["openclaw"]),
-  agent("codebuddy", "CodeBuddy", ["codebuddy", "cbc"]),
-  agent("jcode", "Jcode", ["jcode"])
-];
-function agentById(id) {
-  return AGENTS.find((spec) => spec.id === id);
-}
-
-// src/shell-words.ts
-function shellQuote(value) {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-// src/inventory.ts
-var PROBE_MARKER = "__AGENT_PROFILES__";
-var SHELL_TIMEOUT_MS = 15000;
-function probeTokens() {
-  const tokens = new Set;
-  for (const agent2 of AGENTS) {
-    for (const command of agent2.commands)
-      tokens.add(command);
-    for (const command of agent2.requiredCommands)
-      tokens.add(command);
-  }
-  return [...tokens];
-}
-function installedAgents(found) {
-  return AGENTS.filter((agent2) => agent2.commands.some((command) => found.has(command)) && agent2.requiredCommands.every((command) => found.has(command))).map((agent2) => agent2.id);
-}
-async function detectAgents(deps, onFallback) {
-  const found = await deps.findCommands(probeTokens(), onFallback);
-  return { inventory: { agents: installedAgents(found), detectedAt: deps.now() }, found };
-}
-function parseShellProbe(stdout) {
-  const first = stdout.indexOf(PROBE_MARKER);
-  if (first === -1)
-    return null;
-  const bodyStart = first + PROBE_MARKER.length;
-  const second = stdout.indexOf(PROBE_MARKER, bodyStart);
-  if (second === -1)
-    return null;
-  const names = new Set;
-  for (const line of stdout.slice(bodyStart, second).split(`
-`)) {
-    const equals = line.indexOf("=");
-    if (equals > 0)
-      names.add(line.slice(0, equals));
-  }
-  return names;
-}
-function probeScript(names) {
-  const quoted = names.map(shellQuote).join(" ");
-  return `print -r -- ${PROBE_MARKER}; for c in ${quoted}; do p=$(whence -p -- "$c" 2>/dev/null) && print -r -- "$c=$p"; done; print -r -- ${PROBE_MARKER}`;
-}
-function isExecutable(path) {
-  try {
-    accessSync(path, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function searchPath(names, pathEnv) {
-  const directories = pathEnv.split(":").filter((directory) => directory !== "");
-  return new Set(names.filter((name) => directories.some((directory) => isExecutable(join(directory, name)))));
-}
-var runLoginShell = (script) => new Promise((resolve) => {
-  let stdout = "";
-  let settled = false;
-  let timer;
-  const finish = (ok) => {
-    if (settled)
-      return;
-    settled = true;
-    clearTimeout(timer);
-    resolve({ ok, stdout });
-  };
-  try {
-    const child = spawn("/bin/zsh", ["-ilc", script], { stdio: ["ignore", "pipe", "ignore"] });
-    timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(false);
-    }, SHELL_TIMEOUT_MS);
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.on("error", () => finish(false));
-    child.on("close", (code) => finish(code === 0));
-  } catch {
-    finish(false);
-  }
-});
-async function findCommands(tokens, runShell = runLoginShell, pathEnv = process.env.PATH ?? "", onFallback) {
-  const found = new Set;
-  const names = [];
-  for (const token of new Set(tokens)) {
-    if (token.includes("/")) {
-      if (isExecutable(token))
-        found.add(token);
-    } else {
-      names.push(token);
-    }
-  }
-  if (names.length === 0)
-    return found;
-  const probe = await runShell(probeScript(names));
-  const parsed = probe.ok ? parseShellProbe(probe.stdout) : null;
-  if (parsed === null)
-    onFallback?.();
-  const resolved = parsed ?? searchPath(names, pathEnv);
-  for (const name of resolved)
-    found.add(name);
-  return found;
-}
-var REAL_INVENTORY_DEPS = {
-  findCommands: (tokens, onFallback) => findCommands(tokens, undefined, undefined, onFallback),
-  now: Date.now
-};
-
 // src/search.ts
 var SKILLS_SH = "https://skills.sh";
 var SEARCH_LIMIT = 20;
@@ -7210,7 +7032,7 @@ async function searchSkills(query, opts) {
 // node_modules/skills/dist/index.mjs
 var exports_dist = {};
 __export(exports_dist, {
-  detectAgents: () => detectAgents2,
+  detectAgents: () => detectAgents,
   diagnostics: () => diagnostics,
   getSupportedAgents: () => getSupportedAgents,
   installSkills: () => installSkills,
@@ -8775,7 +8597,7 @@ function oe(e, n) {
 
 // node_modules/skills/dist/_chunks/libs/simple-git.mjs
 import { normalize } from "node:path";
-import { spawn as spawn2 } from "node:child_process";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 var import_dist = require_dist();
 var import_src = /* @__PURE__ */ __toESM(require_src$1(), 1);
@@ -9510,7 +9332,7 @@ var Pn = class {
           T2 = C2 || T2;
         }
       });
-      const k2 = spawn2(n, r3, a2);
+      const k2 = spawn(n, r3, a2);
       k2.stdout.on("data", Et(y2, "stdOut", o2, i.step("stdOut"))), k2.stderr.on("data", Et(w2, "stdErr", o2, i.step("stdErr"))), k2.on("error", Mn(w2, o2)), s && (o2("Passing child process stdOut/stdErr to custom outputHandler"), s(n, k2.stdout, k2.stderr, [...r3])), this._plugins.exec("spawn.after", undefined, {
         ...this.taskContext(e, r3),
         spawned: k2,
@@ -11390,7 +11212,7 @@ var require_dist3 = /* @__PURE__ */ __commonJSMin((exports, module) => {
   });
   module.exports = __toCommonJS(src_exports);
   var import_promises = __require2("node:fs/promises");
-  var import_node_fs2 = __require2("node:fs");
+  var import_node_fs = __require2("node:fs");
   const DEVIN_LOCAL_PATH = "/opt/.devin";
   const CURSOR = "cursor";
   const CURSOR_CLI = "cursor-cli";
@@ -11500,7 +11322,7 @@ var require_dist3 = /* @__PURE__ */ __commonJSMin((exports, module) => {
         agent: { name: GITHUB_COPILOT }
       };
     try {
-      await (0, import_promises.access)(DEVIN_LOCAL_PATH, import_node_fs2.constants.F_OK);
+      await (0, import_promises.access)(DEVIN_LOCAL_PATH, import_node_fs.constants.F_OK);
       return {
         isAgent: true,
         agent: { name: DEVIN }
@@ -11515,7 +11337,7 @@ var require_dist3 = /* @__PURE__ */ __commonJSMin((exports, module) => {
 
 // node_modules/skills/dist/_chunks/remove.mjs
 import { existsSync, readFileSync, readdirSync, realpathSync } from "fs";
-import { basename, dirname, extname as extname$1, isAbsolute, join as join2, normalize as normalize2, posix, relative, resolve, sep } from "path";
+import { basename, dirname, extname as extname$1, isAbsolute, join, normalize as normalize2, posix, relative, resolve, sep } from "path";
 
 // node_modules/yaml/dist/index.js
 var composer = require_composer();
@@ -11656,7 +11478,7 @@ function ansiFormatter(colors) {
 
 // node_modules/skills/dist/_chunks/remove.mjs
 import { promisify } from "util";
-import { execFile, spawn as spawn3 } from "node:child_process";
+import { execFile, spawn as spawn2 } from "node:child_process";
 import { access, chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "fs/promises";
 import { execFile as execFile$1 } from "child_process";
 import { Writable } from "stream";
@@ -15334,7 +15156,7 @@ function authError(url, repo, message, cause) {
 async function cloneRepo(url, ref) {
   if (/^ext::/i.test(url))
     throw diagnostics.SKILLS_UNSUPPORTED_GIT_TRANSPORT({ transport: "ext" });
-  const tempDir = await mkdtemp(join2(tmpdir(), "skills-"));
+  const tempDir = await mkdtemp(join(tmpdir(), "skills-"));
   const cloneOptions = ref ? [
     "--depth",
     "1",
@@ -15909,15 +15731,15 @@ var S_BAR2 = pc.dim("│");
 var S_BAR_H2 = pc.dim("─");
 var cancelSymbol = Symbol("cancel");
 var home = homedir();
-var configHome = xdgConfig ?? join2(home, ".config");
-var codexHome = process.env.CODEX_HOME?.trim() || join2(home, ".codex");
-var claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join2(home, ".claude");
-var vibeHome = process.env.VIBE_HOME?.trim() || join2(home, ".vibe");
-var hermesHome = process.env.HERMES_HOME?.trim() || join2(home, ".hermes");
-var autohandHome = process.env.AUTOHAND_HOME?.trim() || join2(home, ".autohand");
-var grokHome = process.env.GROK_HOME?.trim() || join2(home, ".grok");
-var sarvamHome = process.env.SARVAM_HOME?.trim() || join2(home, ".sarvam");
-var reasonixHome = process.env.REASONIX_HOME?.trim() || (platform() === "win32" ? join2(process.env.APPDATA?.trim() || join2(home, "AppData", "Roaming"), "reasonix") : join2(home, ".reasonix"));
+var configHome = xdgConfig ?? join(home, ".config");
+var codexHome = process.env.CODEX_HOME?.trim() || join(home, ".codex");
+var claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude");
+var vibeHome = process.env.VIBE_HOME?.trim() || join(home, ".vibe");
+var hermesHome = process.env.HERMES_HOME?.trim() || join(home, ".hermes");
+var autohandHome = process.env.AUTOHAND_HOME?.trim() || join(home, ".autohand");
+var grokHome = process.env.GROK_HOME?.trim() || join(home, ".grok");
+var sarvamHome = process.env.SARVAM_HOME?.trim() || join(home, ".sarvam");
+var reasonixHome = process.env.REASONIX_HOME?.trim() || (platform() === "win32" ? join(process.env.APPDATA?.trim() || join(home, "AppData", "Roaming"), "reasonix") : join(home, ".reasonix"));
 var zedAppDataHome = process.env.APPDATA?.trim();
 var zedFlatpakConfigHome = process.env.FLATPAK_XDG_CONFIG_HOME?.trim();
 function packageJsonHasDependency(packageJsonPath, dependencyName) {
@@ -15929,81 +15751,81 @@ function packageJsonHasDependency(packageJsonPath, dependencyName) {
   }
 }
 function getOpenClawGlobalSkillsDir(homeDir = home, pathExists = existsSync) {
-  if (pathExists(join2(homeDir, ".openclaw")))
-    return join2(homeDir, ".openclaw/skills");
-  if (pathExists(join2(homeDir, ".clawdbot")))
-    return join2(homeDir, ".clawdbot/skills");
-  if (pathExists(join2(homeDir, ".moltbot")))
-    return join2(homeDir, ".moltbot/skills");
-  return join2(homeDir, ".openclaw/skills");
+  if (pathExists(join(homeDir, ".openclaw")))
+    return join(homeDir, ".openclaw/skills");
+  if (pathExists(join(homeDir, ".clawdbot")))
+    return join(homeDir, ".clawdbot/skills");
+  if (pathExists(join(homeDir, ".moltbot")))
+    return join(homeDir, ".moltbot/skills");
+  return join(homeDir, ".openclaw/skills");
 }
 function isZCodeInstalled(homeDir = home, pathExists = existsSync) {
-  return pathExists(join2(homeDir, ".zcode")) || pathExists("/Applications/ZCode.app");
+  return pathExists(join(homeDir, ".zcode")) || pathExists("/Applications/ZCode.app");
 }
 function isKimchiInstalled(homeDir = home, pathExists = existsSync) {
-  return pathExists(join2(homeDir, ".config", "kimchi"));
+  return pathExists(join(homeDir, ".config", "kimchi"));
 }
 function isMiniMaxCodeInstalled(homeDir = home, pathExists = existsSync) {
-  return pathExists(join2(homeDir, ".minimax")) || pathExists("/Applications/MiniMax Code.app");
+  return pathExists(join(homeDir, ".minimax")) || pathExists("/Applications/MiniMax Code.app");
 }
 function isPositAssistantInstalled(homeDir = home, pathExists = existsSync) {
-  return pathExists(join2(homeDir, ".posit/assistant")) || pathExists(join2(homeDir, ".positai"));
+  return pathExists(join(homeDir, ".posit/assistant")) || pathExists(join(homeDir, ".positai"));
 }
 var agents = {
   "aider-desk": {
     name: "aider-desk",
     displayName: "AiderDesk",
     skillsDir: ".aider-desk/skills",
-    globalSkillsDir: join2(home, ".aider-desk/skills"),
+    globalSkillsDir: join(home, ".aider-desk/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".aider-desk"));
+      return existsSync(join(home, ".aider-desk"));
     }
   },
   amp: {
     name: "amp",
     displayName: "Amp",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(configHome, "agents/skills"),
+    globalSkillsDir: join(configHome, "agents/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(configHome, "amp"));
+      return existsSync(join(configHome, "amp"));
     }
   },
   antigravity: {
     name: "antigravity",
     displayName: "Antigravity",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".gemini/config/skills"),
+    globalSkillsDir: join(home, ".gemini/config/skills"),
     globalReadsCanonical: false,
     showInUniversalPrompt: false,
     detectInstalled: async () => {
-      return existsSync(join2(home, ".gemini/antigravity"));
+      return existsSync(join(home, ".gemini/antigravity"));
     }
   },
   "antigravity-cli": {
     name: "antigravity-cli",
     displayName: "Antigravity CLI",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".gemini/config/skills"),
+    globalSkillsDir: join(home, ".gemini/config/skills"),
     globalReadsCanonical: false,
     showInUniversalPrompt: false,
     detectInstalled: async () => {
-      return existsSync(join2(home, ".gemini/antigravity-cli"));
+      return existsSync(join(home, ".gemini/antigravity-cli"));
     }
   },
   astrbot: {
     name: "astrbot",
     displayName: "AstrBot",
     skillsDir: "data/skills",
-    globalSkillsDir: join2(home, ".astrbot/data/skills"),
+    globalSkillsDir: join(home, ".astrbot/data/skills"),
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(cwd, "data/skills")) || existsSync(join2(home, ".astrbot"));
+      return existsSync(join(cwd, "data/skills")) || existsSync(join(home, ".astrbot"));
     }
   },
   "autohand-code": {
     name: "autohand-code",
     displayName: "Autohand Code CLI",
     skillsDir: ".autohand/skills",
-    globalSkillsDir: join2(autohandHome, "skills"),
+    globalSkillsDir: join(autohandHome, "skills"),
     detectInstalled: async () => {
       return existsSync(autohandHome);
     }
@@ -16012,25 +15834,25 @@ var agents = {
     name: "augment",
     displayName: "Augment",
     skillsDir: ".augment/skills",
-    globalSkillsDir: join2(home, ".augment/skills"),
+    globalSkillsDir: join(home, ".augment/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".augment"));
+      return existsSync(join(home, ".augment"));
     }
   },
   bob: {
     name: "bob",
     displayName: "IBM Bob",
     skillsDir: ".bob/skills",
-    globalSkillsDir: join2(home, ".bob/skills"),
+    globalSkillsDir: join(home, ".bob/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".bob"));
+      return existsSync(join(home, ".bob"));
     }
   },
   "claude-code": {
     name: "claude-code",
     displayName: "Claude Code",
     skillsDir: ".claude/skills",
-    globalSkillsDir: join2(claudeHome, "skills"),
+    globalSkillsDir: join(claudeHome, "skills"),
     createProjectSkillsDirByDefault: true,
     detectInstalled: async () => {
       return existsSync(claudeHome);
@@ -16042,59 +15864,59 @@ var agents = {
     skillsDir: "skills",
     globalSkillsDir: getOpenClawGlobalSkillsDir(),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".openclaw")) || existsSync(join2(home, ".clawdbot")) || existsSync(join2(home, ".moltbot"));
+      return existsSync(join(home, ".openclaw")) || existsSync(join(home, ".clawdbot")) || existsSync(join(home, ".moltbot"));
     }
   },
   cline: {
     name: "cline",
     displayName: "Cline",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents", "skills"),
+    globalSkillsDir: join(home, ".agents", "skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".cline"));
+      return existsSync(join(home, ".cline"));
     }
   },
   "codearts-agent": {
     name: "codearts-agent",
     displayName: "CodeArts Agent",
     skillsDir: ".codeartsdoer/skills",
-    globalSkillsDir: join2(home, ".codeartsdoer/skills"),
+    globalSkillsDir: join(home, ".codeartsdoer/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".codeartsdoer"));
+      return existsSync(join(home, ".codeartsdoer"));
     }
   },
   codebuddy: {
     name: "codebuddy",
     displayName: "CodeBuddy",
     skillsDir: ".codebuddy/skills",
-    globalSkillsDir: join2(home, ".codebuddy/skills"),
+    globalSkillsDir: join(home, ".codebuddy/skills"),
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(cwd, ".codebuddy")) || existsSync(join2(home, ".codebuddy"));
+      return existsSync(join(cwd, ".codebuddy")) || existsSync(join(home, ".codebuddy"));
     }
   },
   codemaker: {
     name: "codemaker",
     displayName: "Codemaker",
     skillsDir: ".codemaker/skills",
-    globalSkillsDir: join2(home, ".codemaker/skills"),
+    globalSkillsDir: join(home, ".codemaker/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".codemaker"));
+      return existsSync(join(home, ".codemaker"));
     }
   },
   codestudio: {
     name: "codestudio",
     displayName: "Code Studio",
     skillsDir: ".codestudio/skills",
-    globalSkillsDir: join2(home, ".codestudio/skills"),
+    globalSkillsDir: join(home, ".codestudio/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".codestudio"));
+      return existsSync(join(home, ".codestudio"));
     }
   },
   codex: {
     name: "codex",
     displayName: "Codex",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents", "skills"),
+    globalSkillsDir: join(home, ".agents", "skills"),
     detectInstalled: async () => {
       return existsSync(codexHome) || existsSync("/etc/codex");
     }
@@ -16103,83 +15925,83 @@ var agents = {
     name: "command-code",
     displayName: "Command Code",
     skillsDir: ".commandcode/skills",
-    globalSkillsDir: join2(home, ".commandcode/skills"),
+    globalSkillsDir: join(home, ".commandcode/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".commandcode"));
+      return existsSync(join(home, ".commandcode"));
     }
   },
   continue: {
     name: "continue",
     displayName: "Continue",
     skillsDir: ".continue/skills",
-    globalSkillsDir: join2(home, ".continue/skills"),
+    globalSkillsDir: join(home, ".continue/skills"),
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(cwd, ".continue")) || existsSync(join2(home, ".continue"));
+      return existsSync(join(cwd, ".continue")) || existsSync(join(home, ".continue"));
     }
   },
   cortex: {
     name: "cortex",
     displayName: "Cortex Code",
     skillsDir: ".cortex/skills",
-    globalSkillsDir: join2(home, ".snowflake/cortex/skills"),
+    globalSkillsDir: join(home, ".snowflake/cortex/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".snowflake/cortex"));
+      return existsSync(join(home, ".snowflake/cortex"));
     }
   },
   crush: {
     name: "crush",
     displayName: "Crush",
     skillsDir: ".crush/skills",
-    globalSkillsDir: join2(home, ".config/crush/skills"),
+    globalSkillsDir: join(home, ".config/crush/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".config/crush"));
+      return existsSync(join(home, ".config/crush"));
     }
   },
   cursor: {
     name: "cursor",
     displayName: "Cursor",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".cursor/skills"),
+    globalSkillsDir: join(home, ".cursor/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".cursor"));
+      return existsSync(join(home, ".cursor"));
     }
   },
   deepagents: {
     name: "deepagents",
     displayName: "Deep Agents",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".deepagents/agent/skills"),
+    globalSkillsDir: join(home, ".deepagents/agent/skills"),
     showInUniversalPrompt: false,
     detectInstalled: async () => {
-      return existsSync(join2(home, ".deepagents"));
+      return existsSync(join(home, ".deepagents"));
     }
   },
   devin: {
     name: "devin",
     displayName: "Devin for Terminal",
     skillsDir: ".devin/skills",
-    globalSkillsDir: join2(configHome, "devin/skills"),
+    globalSkillsDir: join(configHome, "devin/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(configHome, "devin"));
+      return existsSync(join(configHome, "devin"));
     }
   },
   dexto: {
     name: "dexto",
     displayName: "Dexto",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     showInUniversalPrompt: false,
     detectInstalled: async () => {
-      return existsSync(join2(home, ".dexto"));
+      return existsSync(join(home, ".dexto"));
     }
   },
   droid: {
     name: "droid",
     displayName: "Droid",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".factory/skills"),
+    globalSkillsDir: join(home, ".factory/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".factory"));
+      return existsSync(join(home, ".factory"));
     }
   },
   eve: {
@@ -16188,69 +16010,69 @@ var agents = {
     skillsDir: "agent/skills",
     globalSkillsDir: undefined,
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(cwd, "agent")) && packageJsonHasDependency(join2(cwd, "package.json"), "eve");
+      return existsSync(join(cwd, "agent")) && packageJsonHasDependency(join(cwd, "package.json"), "eve");
     }
   },
   firebender: {
     name: "firebender",
     displayName: "Firebender",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".firebender/skills"),
+    globalSkillsDir: join(home, ".firebender/skills"),
     showInUniversalPrompt: false,
     detectInstalled: async () => {
-      return existsSync(join2(home, ".firebender"));
+      return existsSync(join(home, ".firebender"));
     }
   },
   forgecode: {
     name: "forgecode",
     displayName: "ForgeCode",
     skillsDir: ".forge/skills",
-    globalSkillsDir: join2(home, ".forge/skills"),
+    globalSkillsDir: join(home, ".forge/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".forge"));
+      return existsSync(join(home, ".forge"));
     }
   },
   fx: {
     name: "fx",
     displayName: "fx",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".fx"));
+      return existsSync(join(home, ".fx"));
     }
   },
   "gemini-cli": {
     name: "gemini-cli",
     displayName: "Gemini CLI",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".gemini/skills"),
+    globalSkillsDir: join(home, ".gemini/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".gemini"));
+      return existsSync(join(home, ".gemini"));
     }
   },
   "github-copilot": {
     name: "github-copilot",
     displayName: "GitHub Copilot",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".copilot/skills"),
+    globalSkillsDir: join(home, ".copilot/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".copilot"));
+      return existsSync(join(home, ".copilot"));
     }
   },
   goose: {
     name: "goose",
     displayName: "Goose",
     skillsDir: ".goose/skills",
-    globalSkillsDir: join2(configHome, "goose/skills"),
+    globalSkillsDir: join(configHome, "goose/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(configHome, "goose"));
+      return existsSync(join(configHome, "goose"));
     }
   },
   grok: {
     name: "grok",
     displayName: "Grok Build",
     skillsDir: ".grok/skills",
-    globalSkillsDir: join2(grokHome, "skills"),
+    globalSkillsDir: join(grokHome, "skills"),
     detectInstalled: async () => {
       return existsSync(grokHome);
     }
@@ -16259,7 +16081,7 @@ var agents = {
     name: "hermes-agent",
     displayName: "Hermes Agent",
     skillsDir: ".hermes/skills",
-    globalSkillsDir: join2(hermesHome, "skills"),
+    globalSkillsDir: join(hermesHome, "skills"),
     detectInstalled: async () => {
       return existsSync(hermesHome);
     }
@@ -16268,52 +16090,52 @@ var agents = {
     name: "inference-sh",
     displayName: "inference.sh",
     skillsDir: ".inferencesh/skills",
-    globalSkillsDir: join2(home, ".inferencesh/skills"),
+    globalSkillsDir: join(home, ".inferencesh/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".inferencesh"));
+      return existsSync(join(home, ".inferencesh"));
     }
   },
   jazz: {
     name: "jazz",
     displayName: "Jazz",
     skillsDir: ".jazz/skills",
-    globalSkillsDir: join2(home, ".jazz/skills"),
+    globalSkillsDir: join(home, ".jazz/skills"),
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(home, ".jazz")) || existsSync(join2(cwd, ".jazz"));
+      return existsSync(join(home, ".jazz")) || existsSync(join(cwd, ".jazz"));
     }
   },
   junie: {
     name: "junie",
     displayName: "Junie",
     skillsDir: ".junie/skills",
-    globalSkillsDir: join2(home, ".junie/skills"),
+    globalSkillsDir: join(home, ".junie/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".junie"));
+      return existsSync(join(home, ".junie"));
     }
   },
   "iflow-cli": {
     name: "iflow-cli",
     displayName: "iFlow CLI",
     skillsDir: ".iflow/skills",
-    globalSkillsDir: join2(home, ".iflow/skills"),
+    globalSkillsDir: join(home, ".iflow/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".iflow"));
+      return existsSync(join(home, ".iflow"));
     }
   },
   kilo: {
     name: "kilo",
     displayName: "Kilo Code",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".kilo/skills"),
+    globalSkillsDir: join(home, ".kilo/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".kilo")) || existsSync(join2(home, ".kilocode"));
+      return existsSync(join(home, ".kilo")) || existsSync(join(home, ".kilocode"));
     }
   },
   kimchi: {
     name: "kimchi",
     displayName: "Kimchi",
     skillsDir: ".kimchi/skills",
-    globalSkillsDir: join2(home, ".config", "kimchi", "harness", "skills"),
+    globalSkillsDir: join(home, ".config", "kimchi", "harness", "skills"),
     detectInstalled: async () => {
       return isKimchiInstalled();
     }
@@ -16322,62 +16144,62 @@ var agents = {
     name: "kimi-code-cli",
     displayName: "Kimi Code CLI",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".kimi-code")) || existsSync(join2(home, ".kimi"));
+      return existsSync(join(home, ".kimi-code")) || existsSync(join(home, ".kimi"));
     }
   },
   "kiro-cli": {
     name: "kiro-cli",
     displayName: "Kiro CLI",
     skillsDir: ".kiro/skills",
-    globalSkillsDir: join2(home, ".kiro/skills"),
+    globalSkillsDir: join(home, ".kiro/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".kiro"));
+      return existsSync(join(home, ".kiro"));
     }
   },
   kode: {
     name: "kode",
     displayName: "Kode",
     skillsDir: ".kode/skills",
-    globalSkillsDir: join2(home, ".kode/skills"),
+    globalSkillsDir: join(home, ".kode/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".kode"));
+      return existsSync(join(home, ".kode"));
     }
   },
   lingma: {
     name: "lingma",
     displayName: "Lingma",
     skillsDir: ".lingma/skills",
-    globalSkillsDir: join2(home, ".lingma/skills"),
+    globalSkillsDir: join(home, ".lingma/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".lingma"));
+      return existsSync(join(home, ".lingma"));
     }
   },
   loaf: {
     name: "loaf",
     displayName: "Loaf",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     showInUniversalPrompt: false,
     detectInstalled: async () => {
-      return existsSync(join2(home, ".loaf"));
+      return existsSync(join(home, ".loaf"));
     }
   },
   mcpjam: {
     name: "mcpjam",
     displayName: "MCPJam",
     skillsDir: ".mcpjam/skills",
-    globalSkillsDir: join2(home, ".mcpjam/skills"),
+    globalSkillsDir: join(home, ".mcpjam/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".mcpjam"));
+      return existsSync(join(home, ".mcpjam"));
     }
   },
   "minimax-code": {
     name: "minimax-code",
     displayName: "MiniMax Code",
     skillsDir: ".minimax/skills",
-    globalSkillsDir: join2(home, ".minimax/skills"),
+    globalSkillsDir: join(home, ".minimax/skills"),
     detectInstalled: async () => {
       return isMiniMaxCodeInstalled();
     }
@@ -16386,7 +16208,7 @@ var agents = {
     name: "mistral-vibe",
     displayName: "Mistral Vibe",
     skillsDir: ".vibe/skills",
-    globalSkillsDir: join2(vibeHome, "skills"),
+    globalSkillsDir: join(vibeHome, "skills"),
     detectInstalled: async () => {
       return existsSync(vibeHome);
     }
@@ -16395,61 +16217,61 @@ var agents = {
     name: "moxby",
     displayName: "Moxby",
     skillsDir: ".moxby/skills",
-    globalSkillsDir: join2(home, ".moxby/skills"),
+    globalSkillsDir: join(home, ".moxby/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".moxby"));
+      return existsSync(join(home, ".moxby"));
     }
   },
   mux: {
     name: "mux",
     displayName: "Mux",
     skillsDir: ".mux/skills",
-    globalSkillsDir: join2(home, ".mux/skills"),
+    globalSkillsDir: join(home, ".mux/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".mux"));
+      return existsSync(join(home, ".mux"));
     }
   },
   opencode: {
     name: "opencode",
     displayName: "OpenCode",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(configHome, "opencode/skills"),
+    globalSkillsDir: join(configHome, "opencode/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(configHome, "opencode"));
+      return existsSync(join(configHome, "opencode"));
     }
   },
   openhands: {
     name: "openhands",
     displayName: "OpenHands",
     skillsDir: ".openhands/skills",
-    globalSkillsDir: join2(home, ".openhands/skills"),
+    globalSkillsDir: join(home, ".openhands/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".openhands"));
+      return existsSync(join(home, ".openhands"));
     }
   },
   ona: {
     name: "ona",
     displayName: "Ona",
     skillsDir: ".ona/skills",
-    globalSkillsDir: join2(home, ".ona/skills"),
+    globalSkillsDir: join(home, ".ona/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".ona"));
+      return existsSync(join(home, ".ona"));
     }
   },
   pi: {
     name: "pi",
     displayName: "Pi",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".pi/agent"));
+      return existsSync(join(home, ".pi/agent"));
     }
   },
   "posit-assistant": {
     name: "posit-assistant",
     displayName: "Posit Assistant",
     skillsDir: ".posit/assistant/skills",
-    globalSkillsDir: join2(home, ".posit/assistant/skills"),
+    globalSkillsDir: join(home, ".posit/assistant/skills"),
     detectInstalled: async () => {
       return isPositAssistantInstalled();
     }
@@ -16458,44 +16280,44 @@ var agents = {
     name: "qoder",
     displayName: "Qoder",
     skillsDir: ".qoder/skills",
-    globalSkillsDir: join2(home, ".qoder/skills"),
+    globalSkillsDir: join(home, ".qoder/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".qoder"));
+      return existsSync(join(home, ".qoder"));
     }
   },
   "qoder-cn": {
     name: "qoder-cn",
     displayName: "Qoder CN",
     skillsDir: ".qoder/skills",
-    globalSkillsDir: join2(home, ".qoder-cn/skills"),
+    globalSkillsDir: join(home, ".qoder-cn/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".qoder-cn"));
+      return existsSync(join(home, ".qoder-cn"));
     }
   },
   "qwen-code": {
     name: "qwen-code",
     displayName: "Qwen Code",
     skillsDir: ".qwen/skills",
-    globalSkillsDir: join2(home, ".qwen/skills"),
+    globalSkillsDir: join(home, ".qwen/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".qwen"));
+      return existsSync(join(home, ".qwen"));
     }
   },
   replit: {
     name: "replit",
     displayName: "Replit",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(configHome, "agents/skills"),
+    globalSkillsDir: join(configHome, "agents/skills"),
     showInUniversalList: false,
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(cwd, ".replit"));
+      return existsSync(join(cwd, ".replit"));
     }
   },
   reasonix: {
     name: "reasonix",
     displayName: "Reasonix",
     skillsDir: ".reasonix/skills",
-    globalSkillsDir: join2(reasonixHome, "skills"),
+    globalSkillsDir: join(reasonixHome, "skills"),
     detectInstalled: async () => {
       return existsSync(reasonixHome);
     }
@@ -16504,25 +16326,25 @@ var agents = {
     name: "rovodev",
     displayName: "Rovo Dev",
     skillsDir: ".rovodev/skills",
-    globalSkillsDir: join2(home, ".rovodev/skills"),
+    globalSkillsDir: join(home, ".rovodev/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".rovodev"));
+      return existsSync(join(home, ".rovodev"));
     }
   },
   roo: {
     name: "roo",
     displayName: "Roo Code",
     skillsDir: ".roo/skills",
-    globalSkillsDir: join2(home, ".roo/skills"),
+    globalSkillsDir: join(home, ".roo/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".roo"));
+      return existsSync(join(home, ".roo"));
     }
   },
   "sarvam-code": {
     name: "sarvam-code",
     displayName: "Sarvam Code",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     showInUniversalPrompt: false,
     detectInstalled: async () => {
       return existsSync(sarvamHome);
@@ -16532,79 +16354,79 @@ var agents = {
     name: "tabnine-cli",
     displayName: "Tabnine CLI",
     skillsDir: ".tabnine/agent/skills",
-    globalSkillsDir: join2(home, ".tabnine/agent/skills"),
+    globalSkillsDir: join(home, ".tabnine/agent/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".tabnine"));
+      return existsSync(join(home, ".tabnine"));
     }
   },
   terramind: {
     name: "terramind",
     displayName: "Terramind",
     skillsDir: ".terramind/skills",
-    globalSkillsDir: join2(home, ".terramind/skills"),
+    globalSkillsDir: join(home, ".terramind/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".terramind"));
+      return existsSync(join(home, ".terramind"));
     }
   },
   tinycloud: {
     name: "tinycloud",
     displayName: "Tinycloud",
     skillsDir: ".tinycloud/skills",
-    globalSkillsDir: join2(home, ".tinycloud/skills"),
+    globalSkillsDir: join(home, ".tinycloud/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".tinycloud"));
+      return existsSync(join(home, ".tinycloud"));
     }
   },
   trae: {
     name: "trae",
     displayName: "Trae",
     skillsDir: ".trae/skills",
-    globalSkillsDir: join2(home, ".trae/skills"),
+    globalSkillsDir: join(home, ".trae/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".trae"));
+      return existsSync(join(home, ".trae"));
     }
   },
   "trae-cn": {
     name: "trae-cn",
     displayName: "Trae CN",
     skillsDir: ".trae/skills",
-    globalSkillsDir: join2(home, ".trae-cn/skills"),
+    globalSkillsDir: join(home, ".trae-cn/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".trae-cn"));
+      return existsSync(join(home, ".trae-cn"));
     }
   },
   warp: {
     name: "warp",
     displayName: "Warp",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".warp"));
+      return existsSync(join(home, ".warp"));
     }
   },
   windsurf: {
     name: "windsurf",
     displayName: "Windsurf",
     skillsDir: ".windsurf/skills",
-    globalSkillsDir: join2(home, ".codeium/windsurf/skills"),
+    globalSkillsDir: join(home, ".codeium/windsurf/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".codeium/windsurf"));
+      return existsSync(join(home, ".codeium/windsurf"));
     }
   },
   zed: {
     name: "zed",
     displayName: "Zed",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(home, ".agents/skills"),
+    globalSkillsDir: join(home, ".agents/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(configHome, "zed")) || !!zedAppDataHome && existsSync(join2(zedAppDataHome, "Zed")) || !!zedFlatpakConfigHome && existsSync(join2(zedFlatpakConfigHome, "zed"));
+      return existsSync(join(configHome, "zed")) || !!zedAppDataHome && existsSync(join(zedAppDataHome, "Zed")) || !!zedFlatpakConfigHome && existsSync(join(zedFlatpakConfigHome, "zed"));
     }
   },
   zcode: {
     name: "zcode",
     displayName: "ZCode",
     skillsDir: ".zcode/skills",
-    globalSkillsDir: join2(home, ".zcode/skills"),
+    globalSkillsDir: join(home, ".zcode/skills"),
     detectInstalled: async () => {
       return isZCodeInstalled();
     }
@@ -16613,36 +16435,36 @@ var agents = {
     name: "zencoder",
     displayName: "Zencoder",
     skillsDir: ".zencoder/skills",
-    globalSkillsDir: join2(home, ".zencoder/skills"),
+    globalSkillsDir: join(home, ".zencoder/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".zencoder"));
+      return existsSync(join(home, ".zencoder"));
     }
   },
   zenflow: {
     name: "zenflow",
     displayName: "Zenflow",
     skillsDir: ".zencoder/skills",
-    globalSkillsDir: join2(home, ".zencoder/skills"),
+    globalSkillsDir: join(home, ".zencoder/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".zencoder"));
+      return existsSync(join(home, ".zencoder"));
     }
   },
   neovate: {
     name: "neovate",
     displayName: "Neovate",
     skillsDir: ".neovate/skills",
-    globalSkillsDir: join2(home, ".neovate/skills"),
+    globalSkillsDir: join(home, ".neovate/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".neovate"));
+      return existsSync(join(home, ".neovate"));
     }
   },
   pochi: {
     name: "pochi",
     displayName: "Pochi",
     skillsDir: ".pochi/skills",
-    globalSkillsDir: join2(home, ".pochi/skills"),
+    globalSkillsDir: join(home, ".pochi/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".pochi"));
+      return existsSync(join(home, ".pochi"));
     }
   },
   promptscript: {
@@ -16652,23 +16474,23 @@ var agents = {
     globalSkillsDir: undefined,
     showInUniversalPrompt: false,
     detectInstalled: async (cwd = process.cwd()) => {
-      return existsSync(join2(cwd, ".promptscript")) || existsSync(join2(cwd, "promptscript.yaml"));
+      return existsSync(join(cwd, ".promptscript")) || existsSync(join(cwd, "promptscript.yaml"));
     }
   },
   adal: {
     name: "adal",
     displayName: "AdaL",
     skillsDir: ".adal/skills",
-    globalSkillsDir: join2(home, ".adal/skills"),
+    globalSkillsDir: join(home, ".adal/skills"),
     detectInstalled: async () => {
-      return existsSync(join2(home, ".adal"));
+      return existsSync(join(home, ".adal"));
     }
   },
   universal: {
     name: "universal",
     displayName: "Universal",
     skillsDir: ".agents/skills",
-    globalSkillsDir: join2(configHome, "agents/skills"),
+    globalSkillsDir: join(configHome, "agents/skills"),
     showInUniversalList: false,
     detectInstalled: async () => false
   }
@@ -16683,16 +16505,16 @@ var LEGACY_AGENT_PROJECT_SKILL_DIRS = [
   ".opencode/skills",
   ".pi/skills"
 ];
-var AGENT_PROJECT_SKILL_DIRS = [.../* @__PURE__ */ new Set([...Object.values(agents).map((agent2) => agent2.skillsDir), ...LEGACY_AGENT_PROJECT_SKILL_DIRS])].filter((dir) => dir !== "skills").sort();
+var AGENT_PROJECT_SKILL_DIRS = [.../* @__PURE__ */ new Set([...Object.values(agents).map((agent) => agent.skillsDir), ...LEGACY_AGENT_PROJECT_SKILL_DIRS])].filter((dir) => dir !== "skills").sort();
 async function detectInstalledAgents(cwd = process.cwd()) {
   return (await Promise.all(Object.entries(agents).map(async ([type, config]) => ({
     type,
     installed: await config.detectInstalled(cwd)
   })))).filter((r3) => r3.installed).map((r3) => r3.type);
 }
-var EVE_SUBAGENTS_DIR = join2("agent", "subagents");
+var EVE_SUBAGENTS_DIR = join("agent", "subagents");
 function getEveSubagents(cwd = process.cwd()) {
-  const dir = join2(cwd, EVE_SUBAGENTS_DIR);
+  const dir = join(cwd, EVE_SUBAGENTS_DIR);
   if (!existsSync(dir))
     return [];
   try {
@@ -16739,14 +16561,14 @@ async function getPluginSkillPaths(basePath) {
       for (const skillPath of skills) {
         if (!isValidRelativePath(skillPath))
           continue;
-        const skillDir = dirname(join2(pluginBase, skillPath));
+        const skillDir = dirname(join(pluginBase, skillPath));
         if (isContainedIn(skillDir, basePath))
           searchDirs.push(skillDir);
       }
-    searchDirs.push(join2(pluginBase, "skills"));
+    searchDirs.push(join(pluginBase, "skills"));
   };
   try {
-    const content = await readFile(join2(basePath, ".claude-plugin/marketplace.json"), "utf-8");
+    const content = await readFile(join(basePath, ".claude-plugin/marketplace.json"), "utf-8");
     const manifest = JSON.parse(content);
     const pluginRoot = manifest.metadata?.pluginRoot;
     if (pluginRoot === undefined || isValidRelativePath(pluginRoot))
@@ -16755,11 +16577,11 @@ async function getPluginSkillPaths(basePath) {
           continue;
         if (plugin.source !== undefined && !isValidRelativePath(plugin.source))
           continue;
-        addPluginSkillPaths(join2(basePath, pluginRoot ?? "", plugin.source ?? ""), plugin.skills);
+        addPluginSkillPaths(join(basePath, pluginRoot ?? "", plugin.source ?? ""), plugin.skills);
       }
   } catch {}
   try {
-    const content = await readFile(join2(basePath, ".claude-plugin/plugin.json"), "utf-8");
+    const content = await readFile(join(basePath, ".claude-plugin/plugin.json"), "utf-8");
     addPluginSkillPaths(basePath, JSON.parse(content).skills);
   } catch {}
   return searchDirs;
@@ -16767,7 +16589,7 @@ async function getPluginSkillPaths(basePath) {
 async function getPluginGroupings(basePath) {
   const groupings = /* @__PURE__ */ new Map;
   try {
-    const content = await readFile(join2(basePath, ".claude-plugin/marketplace.json"), "utf-8");
+    const content = await readFile(join(basePath, ".claude-plugin/marketplace.json"), "utf-8");
     const manifest = JSON.parse(content);
     const pluginRoot = manifest.metadata?.pluginRoot;
     if (pluginRoot === undefined || isValidRelativePath(pluginRoot))
@@ -16778,27 +16600,27 @@ async function getPluginGroupings(basePath) {
           continue;
         if (plugin.source !== undefined && !isValidRelativePath(plugin.source))
           continue;
-        const pluginBase = join2(basePath, pluginRoot ?? "", plugin.source ?? "");
+        const pluginBase = join(basePath, pluginRoot ?? "", plugin.source ?? "");
         if (!isContainedIn(pluginBase, basePath))
           continue;
         if (plugin.skills && plugin.skills.length > 0)
           for (const skillPath of plugin.skills) {
             if (!isValidRelativePath(skillPath))
               continue;
-            const skillDir = join2(pluginBase, skillPath);
+            const skillDir = join(pluginBase, skillPath);
             if (isContainedIn(skillDir, basePath))
               groupings.set(resolve(skillDir), plugin.name);
           }
       }
   } catch {}
   try {
-    const content = await readFile(join2(basePath, ".claude-plugin/plugin.json"), "utf-8");
+    const content = await readFile(join(basePath, ".claude-plugin/plugin.json"), "utf-8");
     const manifest = JSON.parse(content);
     if (manifest.name && manifest.skills && manifest.skills.length > 0)
       for (const skillPath of manifest.skills) {
         if (!isValidRelativePath(skillPath))
           continue;
-        const skillDir = join2(basePath, skillPath);
+        const skillDir = join(basePath, skillPath);
         if (isContainedIn(skillDir, basePath))
           groupings.set(resolve(skillDir), manifest.name);
       }
@@ -16837,11 +16659,11 @@ function parseSkillsShPaths(content) {
 async function getSkillsShSearchDirs(basePath) {
   let content;
   try {
-    content = await readFile(join2(basePath, SKILLS_SH_CONFIG_FILE), "utf-8");
+    content = await readFile(join(basePath, SKILLS_SH_CONFIG_FILE), "utf-8");
   } catch {
     return [];
   }
-  return parseSkillsShPaths(content).map((path2) => join2(basePath, path2));
+  return parseSkillsShPaths(content).map((path2) => join(basePath, path2));
 }
 var EXCLUDE_FILES = /* @__PURE__ */ new Set(["metadata.json"]);
 var EXCLUDE_DIRS = /* @__PURE__ */ new Set([
@@ -16899,7 +16721,7 @@ async function collectFiles(dir, prefix, root, ancestors, results) {
   await Promise.all(entries.map(async (entry) => {
     if (isExcluded(entry.name, entry.isDirectory()))
       return;
-    const fullPath = join2(dir, entry.name);
+    const fullPath = join(dir, entry.name);
     const path2 = prefix + entry.name;
     let isDirectory = entry.isDirectory();
     if (entry.isSymbolicLink()) {
@@ -16925,10 +16747,10 @@ var SKILLS_SUBDIR = "skills";
 var LOCAL_LOCK_FILE = "skills-lock.json";
 var CURRENT_VERSION$1 = 2;
 function getLocalLockPath(cwd) {
-  return join2(cwd || process.cwd(), LOCAL_LOCK_FILE);
+  return join(cwd || process.cwd(), LOCAL_LOCK_FILE);
 }
 function getInstalledSkillDir(skillName, cwd) {
-  return join2(cwd || process.cwd(), AGENTS_DIR$1, SKILLS_SUBDIR, sanitizeName(skillName));
+  return join(cwd || process.cwd(), AGENTS_DIR$1, SKILLS_SUBDIR, sanitizeName(skillName));
 }
 async function readLocalLock(cwd, { persistMigration = false } = {}) {
   const lockDir = cwd || process.cwd();
@@ -16976,7 +16798,7 @@ async function readLocalLock(cwd, { persistMigration = false } = {}) {
   return parsed;
 }
 async function migrateComputedHash(dir, v1Hash) {
-  if (!v1Hash || !existsSync(join2(dir, "SKILL.md")))
+  if (!v1Hash || !existsSync(join(dir, "SKILL.md")))
     return "";
   try {
     if (await computeLegacySkillFolderHash(dir) !== v1Hash)
@@ -16991,7 +16813,7 @@ async function computeLegacySkillFolderHash(skillDir) {
   const collect = async (currentDir) => {
     const entries = await readdir(currentDir, { withFileTypes: true });
     await Promise.all(entries.map(async (entry) => {
-      const fullPath = join2(currentDir, entry.name);
+      const fullPath = join(currentDir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name === ".git" || entry.name === "node_modules")
           return;
@@ -17108,7 +16930,7 @@ function isInternalSkill(metadata) {
 }
 async function hasSkillMd(dir) {
   try {
-    const skillPath = join2(dir, "SKILL.md");
+    const skillPath = join(dir, "SKILL.md");
     return (await stat(skillPath)).isFile();
   } catch {
     return false;
@@ -17176,7 +16998,7 @@ async function findSkillDirs(dir, depth = 0, maxDepth = 5) {
   try {
     const [hasSkill, entries] = await Promise.all([hasSkillMd(dir), readdir(dir, { withFileTypes: true }).catch(() => [])]);
     const currentDir = hasSkill ? [dir] : [];
-    const subDirResults = await Promise.all(entries.filter((entry) => entry.isDirectory() && !SKIP_DIRS.includes(entry.name)).map((entry) => findSkillDirs(join2(dir, entry.name), depth + 1, maxDepth)));
+    const subDirResults = await Promise.all(entries.filter((entry) => entry.isDirectory() && !SKIP_DIRS.includes(entry.name)).map((entry) => findSkillDirs(join(dir, entry.name), depth + 1, maxDepth)));
     return [...currentDir, ...subDirResults.flat()];
   } catch {
     return [];
@@ -17184,7 +17006,7 @@ async function findSkillDirs(dir, depth = 0, maxDepth = 5) {
 }
 function isSubpathSafe(basePath, subpath) {
   const normalizedBase = normalize2(resolve(basePath));
-  const normalizedTarget = normalize2(resolve(join2(basePath, subpath)));
+  const normalizedTarget = normalize2(resolve(join(basePath, subpath)));
   return normalizedTarget.startsWith(normalizedBase + sep) || normalizedTarget === normalizedBase;
 }
 async function sourceLockedSkillNames(basePath) {
@@ -17203,8 +17025,8 @@ async function discoverSkills(basePath, subpath, options) {
   const lockedSkillNames = new Set((await sourceLockedSkillNames(basePath)).map(normalizeSkillName));
   if (subpath && !isSubpathSafe(basePath, subpath))
     throw diagnostics.SKILLS_SUBPATH_OUTSIDE_REPO({ subpath });
-  const searchPath2 = subpath ? join2(basePath, subpath) : basePath;
-  const pluginGroupings = await getPluginGroupings(searchPath2);
+  const searchPath = subpath ? join(basePath, subpath) : basePath;
+  const pluginGroupings = await getPluginGroupings(searchPath);
   const enhanceSkill = (skill) => {
     const resolvedPath = resolve(skill.path);
     if (pluginGroupings.has(resolvedPath))
@@ -17228,8 +17050,8 @@ async function discoverSkills(basePath, subpath, options) {
     parsedSkillPaths.add(skillMdPath);
     return parseSkillMd(skillMdPath, options);
   };
-  if (await hasSkillMd(searchPath2)) {
-    let skill = await parseSkillAt(searchPath2);
+  if (await hasSkillMd(searchPath)) {
+    let skill = await parseSkillAt(searchPath);
     if (skill) {
       if (!isInstalledProjectSkill(skill)) {
         skill = enhanceSkill(skill);
@@ -17241,16 +17063,16 @@ async function discoverSkills(basePath, subpath, options) {
     }
   }
   const prioritySearchDirs = [
-    searchPath2,
-    join2(searchPath2, "skills"),
-    join2(searchPath2, "skills/.curated"),
-    join2(searchPath2, "skills/.experimental"),
-    join2(searchPath2, "skills/.system"),
-    ...AGENT_PROJECT_SKILL_DIRS.map((dir) => join2(searchPath2, dir))
+    searchPath,
+    join(searchPath, "skills"),
+    join(searchPath, "skills/.curated"),
+    join(searchPath, "skills/.experimental"),
+    join(searchPath, "skills/.system"),
+    ...AGENT_PROJECT_SKILL_DIRS.map((dir) => join(searchPath, dir))
   ];
-  prioritySearchDirs.push(...await getSkillsShSearchDirs(searchPath2));
+  prioritySearchDirs.push(...await getSkillsShSearchDirs(searchPath));
   const deepContainerDirs = new Set(prioritySearchDirs.slice(1));
-  prioritySearchDirs.push(...await getPluginSkillPaths(searchPath2));
+  prioritySearchDirs.push(...await getPluginSkillPaths(searchPath));
   const tryAddSkillAt = async (skillDir) => {
     if (!await hasSkillMd(skillDir))
       return false;
@@ -17270,7 +17092,7 @@ async function discoverSkills(basePath, subpath, options) {
       for (const entry of entries) {
         if (!entry.isDirectory())
           continue;
-        const childDir = join2(dir, entry.name);
+        const childDir = join(dir, entry.name);
         if (await tryAddSkillAt(childDir) || depth >= maxDepth || SKIP_DIRS.includes(entry.name))
           continue;
         await walkSkillDirs(childDir, maxDepth, depth + 1);
@@ -17280,7 +17102,7 @@ async function discoverSkills(basePath, subpath, options) {
   for (const dir of prioritySearchDirs)
     await walkSkillDirs(dir, deepContainerDirs.has(dir) ? 3 : 1);
   if (skills.length === 0 || options?.fullDepth) {
-    const allSkillDirs = await findSkillDirs(searchPath2);
+    const allSkillDirs = await findSkillDirs(searchPath);
     for (const skillDir of allSkillDirs) {
       let skill = await parseSkillAt(skillDir);
       if (skill && (options?.includeDuplicateNames || !seenNames.has(skill.name)) && !isInstalledProjectSkill(skill)) {
@@ -17317,7 +17139,7 @@ function shouldSkipProjectAgentSymlink(agentType, isGlobal, cwd, createMissingAg
   if (isGlobal || isUniversalAgent(agentType) || createMissingAgentRoot || agents[agentType].createProjectSkillsDirByDefault)
     return false;
   const agentRoot = agents[agentType].skillsDir.split("/")[0];
-  return !existsSync(join2(cwd, agentRoot));
+  return !existsSync(join(cwd, agentRoot));
 }
 async function isDirEntryOrSymlinkToDir(entry, entryPath) {
   if (entry.isDirectory())
@@ -17332,25 +17154,25 @@ async function isDirEntryOrSymlinkToDir(entry, entryPath) {
 }
 function getCanonicalSkillsDir(global, cwd) {
   const baseDir = global ? homedir() : cwd || process.cwd();
-  return join2(baseDir, AGENTS_DIR$1, SKILLS_SUBDIR);
+  return join(baseDir, AGENTS_DIR$1, SKILLS_SUBDIR);
 }
 function getEveSubagentSkillsDir(subagent, cwd) {
   const baseDir = cwd || process.cwd();
-  return join2(baseDir, EVE_SUBAGENTS_DIR, sanitizeName(subagent), "skills");
+  return join(baseDir, EVE_SUBAGENTS_DIR, sanitizeName(subagent), "skills");
 }
 function getAgentBaseDir(agentType, global, cwd, eveSubagent) {
   if (global ? readsCanonicalGlobally(agentType) : isUniversalAgent(agentType))
     return getCanonicalSkillsDir(global, cwd);
   if (agentType === "eve" && eveSubagent)
     return getEveSubagentSkillsDir(eveSubagent, cwd);
-  const agent2 = agents[agentType];
+  const agent = agents[agentType];
   const baseDir = global ? homedir() : cwd || process.cwd();
   if (global) {
-    if (agent2.globalSkillsDir === undefined)
-      return join2(baseDir, agent2.skillsDir);
-    return agent2.globalSkillsDir;
+    if (agent.globalSkillsDir === undefined)
+      return join(baseDir, agent.skillsDir);
+    return agent.globalSkillsDir;
   }
-  return join2(baseDir, agent2.skillsDir);
+  return join(baseDir, agent.skillsDir);
 }
 function resolveSymlinkTarget(linkPath, linkTarget) {
   return resolve(dirname(linkPath), linkTarget);
@@ -17358,9 +17180,9 @@ function resolveSymlinkTarget(linkPath, linkTarget) {
 async function findCategoryDirSkills(path2) {
   if (!(await lstat(path2).catch(() => {
     return;
-  }))?.isDirectory() || existsSync(join2(path2, "SKILL.md")))
+  }))?.isDirectory() || existsSync(join(path2, "SKILL.md")))
     return [];
-  return (await readdir(path2).catch(() => [])).filter((name) => existsSync(join2(path2, name, "SKILL.md")));
+  return (await readdir(path2).catch(() => [])).filter((name) => existsSync(join(path2, name, "SKILL.md")));
 }
 async function assertNotCategoryDir(path2) {
   const skills = await findCategoryDirSkills(path2);
@@ -17386,7 +17208,7 @@ async function resolveParentSymlinks(path2) {
   const base = basename(resolved);
   try {
     const realDir = await realpath(dir);
-    return join2(realDir, base);
+    return join(realDir, base);
   } catch {
     return resolved;
   }
@@ -17428,23 +17250,23 @@ async function createSymlink(target, linkPath) {
   }
 }
 async function installSkillForAgent(skill, agentType, options = {}) {
-  const agent2 = agents[agentType];
+  const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
   const eveSubagent = options.eveSubagent;
-  if (isGlobal && agent2.globalSkillsDir === undefined)
+  if (isGlobal && agent.globalSkillsDir === undefined)
     return {
       success: false,
       path: "",
       mode: options.mode ?? "symlink",
-      error: `${agent2.displayName} does not support global skill installation`
+      error: `${agent.displayName} does not support global skill installation`
     };
   const skillName = sanitizeName(skill.name || basename(skill.path));
   const installMode = options.mode ?? "symlink";
   const canonicalBase = agentType === "eve" && installMode === "symlink" ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent) : getCanonicalSkillsDir(isGlobal, cwd);
-  const canonicalDir = join2(canonicalBase, skillName);
+  const canonicalDir = join(canonicalBase, skillName);
   const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
-  const agentDir = join2(agentBase, skillName);
+  const agentDir = join(agentBase, skillName);
   if (!isPathSafe$1(canonicalBase, canonicalDir))
     return {
       success: false,
@@ -17580,8 +17402,8 @@ async function copyDirectory(src, dest, agentType, ctx) {
   await mkdir(dest, { recursive: true });
   const entries = await readdir(src, { withFileTypes: true });
   await Promise.all(entries.filter((entry) => !isExcluded(entry.name, entry.isDirectory())).map(async (entry) => {
-    const srcPath = join2(src, entry.name);
-    const destPath = join2(dest, entry.name);
+    const srcPath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
     let isDirectory = entry.isDirectory();
     if (entry.isSymbolicLink()) {
       let realTarget;
@@ -17633,7 +17455,7 @@ function getInstallPath(skillName, agentType, options = {}) {
   options.cwd || process.cwd();
   const sanitized = sanitizeName(skillName);
   const targetBase = getAgentBaseDir(agentType, options.global ?? false, options.cwd, options.eveSubagent);
-  const installPath = join2(targetBase, sanitized);
+  const installPath = join(targetBase, sanitized);
   if (!isPathSafe$1(targetBase, installPath))
     throw diagnostics.SKILLS_UNSAFE_SKILL_NAME();
   return installPath;
@@ -17641,29 +17463,29 @@ function getInstallPath(skillName, agentType, options = {}) {
 function getCanonicalPath(skillName, options = {}) {
   const sanitized = sanitizeName(skillName);
   const canonicalBase = options.agent === "eve" ? getAgentBaseDir("eve", options.global ?? false, options.cwd, options.eveSubagent) : getCanonicalSkillsDir(options.global ?? false, options.cwd);
-  const canonicalPath = join2(canonicalBase, sanitized);
+  const canonicalPath = join(canonicalBase, sanitized);
   if (!isPathSafe$1(canonicalBase, canonicalPath))
     throw diagnostics.SKILLS_UNSAFE_SKILL_NAME();
   return canonicalPath;
 }
 async function installWellKnownSkillForAgent(skill, agentType, options = {}) {
-  const agent2 = agents[agentType];
+  const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
   const installMode = options.mode ?? "symlink";
   const eveSubagent = options.eveSubagent;
-  if (isGlobal && agent2.globalSkillsDir === undefined)
+  if (isGlobal && agent.globalSkillsDir === undefined)
     return {
       success: false,
       path: "",
       mode: installMode,
-      error: `${agent2.displayName} does not support global skill installation`
+      error: `${agent.displayName} does not support global skill installation`
     };
   const skillName = sanitizeName(skill.installName);
   const canonicalBase = agentType === "eve" && installMode === "symlink" ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent) : getCanonicalSkillsDir(isGlobal, cwd);
-  const canonicalDir = join2(canonicalBase, skillName);
+  const canonicalDir = join(canonicalBase, skillName);
   const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
-  const agentDir = join2(agentBase, skillName);
+  const agentDir = join(agentBase, skillName);
   if (!isPathSafe$1(canonicalBase, canonicalDir))
     return {
       success: false,
@@ -17680,7 +17502,7 @@ async function installWellKnownSkillForAgent(skill, agentType, options = {}) {
     };
   async function writeSkillFiles(targetDir) {
     for (const [filePath, content] of skill.files) {
-      const fullPath = join2(targetDir, filePath);
+      const fullPath = join(targetDir, filePath);
       if (!isPathSafe$1(targetDir, fullPath))
         continue;
       const parentDir = dirname(fullPath);
@@ -17738,22 +17560,22 @@ async function installWellKnownSkillForAgent(skill, agentType, options = {}) {
   }
 }
 async function installBlobSkillForAgent(skill, agentType, options = {}) {
-  const agent2 = agents[agentType];
+  const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
   const installMode = options.mode ?? "symlink";
   const eveSubagent = options.eveSubagent;
-  if (isGlobal && agent2.globalSkillsDir === undefined)
+  if (isGlobal && agent.globalSkillsDir === undefined)
     return {
       success: false,
       path: "",
       mode: installMode,
-      error: `${agent2.displayName} does not support global skill installation`
+      error: `${agent.displayName} does not support global skill installation`
     };
   const skillName = sanitizeName(skill.installName);
   const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
   if (agentType === "eve" && !isEvePackagedSkill(skill.files)) {
-    const flatSkillPath = join2(agentBase, toEveFlatSkillFileName(skill.installName));
+    const flatSkillPath = join(agentBase, toEveFlatSkillFileName(skill.installName));
     if (!isPathSafe$1(agentBase, flatSkillPath))
       return {
         success: false,
@@ -17783,8 +17605,8 @@ async function installBlobSkillForAgent(skill, agentType, options = {}) {
     }
   }
   const canonicalBase = agentType === "eve" && installMode === "symlink" ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent) : getCanonicalSkillsDir(isGlobal, cwd);
-  const canonicalDir = join2(canonicalBase, skillName);
-  const agentDir = join2(agentBase, skillName);
+  const canonicalDir = join(canonicalBase, skillName);
+  const agentDir = join(agentBase, skillName);
   if (!isPathSafe$1(canonicalBase, canonicalDir))
     return {
       success: false,
@@ -17803,7 +17625,7 @@ async function installBlobSkillForAgent(skill, agentType, options = {}) {
     for (const file of skill.files) {
       if (isExcludedPath(file.path))
         continue;
-      const fullPath = join2(targetDir, file.path);
+      const fullPath = join(targetDir, file.path);
       if (!isPathSafe$1(targetDir, fullPath))
         continue;
       const parentDir = dirname(fullPath);
@@ -17888,10 +17710,10 @@ async function listInstalledSkills(options = {}) {
       path: getCanonicalSkillsDir(isGlobal, cwd)
     });
     for (const agentType of agentsToCheck) {
-      const agent2 = agents[agentType];
-      if (isGlobal && agent2.globalSkillsDir === undefined)
+      const agent = agents[agentType];
+      if (isGlobal && agent.globalSkillsDir === undefined)
         continue;
-      const agentDir = isGlobal ? agent2.globalSkillsDir : join2(cwd, agent2.skillsDir);
+      const agentDir = isGlobal ? agent.globalSkillsDir : join(cwd, agent.skillsDir);
       if (!scopes.some((s3) => s3.path === agentDir && s3.global === isGlobal))
         scopes.push({
           global: isGlobal,
@@ -17915,10 +17737,10 @@ async function listInstalledSkills(options = {}) {
         continue;
       if (agentsToCheck.includes(agentType))
         continue;
-      const agent2 = agents[agentType];
-      if (isGlobal && agent2.globalSkillsDir === undefined)
+      const agent = agents[agentType];
+      if (isGlobal && agent.globalSkillsDir === undefined)
         continue;
-      const agentDir = isGlobal ? agent2.globalSkillsDir : join2(cwd, agent2.skillsDir);
+      const agentDir = isGlobal ? agent.globalSkillsDir : join(cwd, agent.skillsDir);
       if (scopes.some((s3) => s3.path === agentDir && s3.global === isGlobal))
         continue;
       if (existsSync(agentDir))
@@ -17933,10 +17755,10 @@ async function listInstalledSkills(options = {}) {
     try {
       const entries = await readdir(scope.path, { withFileTypes: true });
       for (const entry of entries) {
-        const skillDir = join2(scope.path, entry.name);
+        const skillDir = join(scope.path, entry.name);
         if (!await isDirEntryOrSymlinkToDir(entry, skillDir))
           continue;
-        const skillMdPath = join2(skillDir, "SKILL.md");
+        const skillMdPath = join(skillDir, "SKILL.md");
         try {
           await stat(skillMdPath);
         } catch {
@@ -17964,10 +17786,10 @@ async function listInstalledSkills(options = {}) {
           continue;
         }
         const sanitizedSkillName = sanitizeName(skill.name);
-        const installedAgents2 = [];
+        const installedAgents = [];
         for (const agentType of agentsToCheck) {
-          const agent2 = agents[agentType];
-          if (scope.global && agent2.globalSkillsDir === undefined)
+          const agent = agents[agentType];
+          if (scope.global && agent.globalSkillsDir === undefined)
             continue;
           const agentBase = getAgentBaseDir(agentType, scope.global, cwd);
           let found = false;
@@ -17977,7 +17799,7 @@ async function listInstalledSkills(options = {}) {
             skill.name.toLowerCase().replace(/\s+/g, "-").replace(/[\/\\:\0]/g, "")
           ]));
           for (const possibleName of possibleNames) {
-            const agentSkillDir = join2(agentBase, possibleName);
+            const agentSkillDir = join(agentBase, possibleName);
             if (!isPathSafe$1(agentBase, agentSkillDir))
               continue;
             try {
@@ -17990,13 +17812,13 @@ async function listInstalledSkills(options = {}) {
             try {
               const agentEntries = await readdir(agentBase, { withFileTypes: true });
               for (const agentEntry of agentEntries) {
-                const candidateDir = join2(agentBase, agentEntry.name);
+                const candidateDir = join(agentBase, agentEntry.name);
                 if (!await isDirEntryOrSymlinkToDir(agentEntry, candidateDir))
                   continue;
                 if (!isPathSafe$1(agentBase, candidateDir))
                   continue;
                 try {
-                  const candidateSkillMd = join2(candidateDir, "SKILL.md");
+                  const candidateSkillMd = join(candidateDir, "SKILL.md");
                   await stat(candidateSkillMd);
                   const candidateSkill = await parseSkillMd(candidateSkillMd);
                   if (candidateSkill && candidateSkill.name === skill.name) {
@@ -18007,13 +17829,13 @@ async function listInstalledSkills(options = {}) {
               }
             } catch {}
           if (found)
-            installedAgents2.push(agentType);
+            installedAgents.push(agentType);
         }
         if (skillsMap.has(skillKey)) {
           const existing = skillsMap.get(skillKey);
-          for (const agent2 of installedAgents2)
-            if (!existing.agents.includes(agent2))
-              existing.agents.push(agent2);
+          for (const agent of installedAgents)
+            if (!existing.agents.includes(agent))
+              existing.agents.push(agent);
         } else
           skillsMap.set(skillKey, {
             name: skill.name,
@@ -18021,7 +17843,7 @@ async function listInstalledSkills(options = {}) {
             path: skillDir,
             canonicalPath: skillDir,
             scope: scopeKey,
-            agents: installedAgents2
+            agents: installedAgents
           });
       }
     } catch {}
@@ -19164,8 +18986,8 @@ var CURRENT_VERSION = 3;
 function getSkillLockPath() {
   const xdgStateHome = process.env.XDG_STATE_HOME;
   if (xdgStateHome)
-    return join2(xdgStateHome, "skills", LOCK_FILE);
-  return join2(homedir(), AGENTS_DIR, LOCK_FILE);
+    return join(xdgStateHome, "skills", LOCK_FILE);
+  return join(homedir(), AGENTS_DIR, LOCK_FILE);
 }
 async function readSkillLock() {
   const lockPath = getSkillLockPath();
@@ -19684,7 +19506,7 @@ function debugNtn(args) {
 async function runNtnApi(args) {
   debugNtn(args);
   return new Promise((resolve2, reject) => {
-    const child = spawn3("ntn", args, {
+    const child = spawn2("ntn", args, {
       env: process.env,
       stdio: [
         "ignore",
@@ -20067,29 +19889,29 @@ async function installToTargets(resolved, skills, placement) {
     for (const target of placement.targets) {
       if (placement.skip?.(skill, target))
         continue;
-      const { agent: agent2, subagent } = target;
+      const { agent, subagent } = target;
       const installOptions = {
         global: placement.global,
         cwd: placement.cwd,
         mode: placement.mode,
         eveSubagent: subagent,
-        createMissingAgentRoot: placement.createMissingAgentRoot?.(agent2) ?? false
+        createMissingAgentRoot: placement.createMissingAgentRoot?.(agent) ?? false
       };
       let result;
       if (isWellKnownSourceSkill(skill))
-        result = await installWellKnownSkillForAgent(skill.wellKnown, agent2, installOptions);
+        result = await installWellKnownSkillForAgent(skill.wellKnown, agent, installOptions);
       else if (resolved.blobResult && "files" in skill) {
         const blobSkill = skill;
         result = await installBlobSkillForAgent({
           installName: blobSkill.name,
           files: blobSkill.files
-        }, agent2, installOptions);
+        }, agent, installOptions);
       } else
-        result = await installSkillForAgent(skill, agent2, installOptions);
+        result = await installSkillForAgent(skill, agent, installOptions);
       results.push({
         skill: getSkillDisplayName(skill),
         agent: targetDisplayName(target),
-        agentType: agent2,
+        agentType: agent,
         pluginName: skill.pluginName,
         ...result
       });
@@ -20255,7 +20077,7 @@ async function recordGlobalLock({ parsed, resolved }, skills, options) {
         if (hash)
           skillFolderHash = hash;
       } else if (skillPathValue && tempDir) {
-        const hash = await computeSkillFolderHash(join2(tempDir, dirname(skillPathValue)));
+        const hash = await computeSkillFolderHash(join(tempDir, dirname(skillPathValue)));
         if (hash)
           skillFolderHash = hash;
       } else if (parsed.type === "local") {
@@ -20366,9 +20188,9 @@ async function scanInstalledSkillNames(isGlobal, cwd, onWarn) {
       for (const entry of entries) {
         if (entry.name.startsWith("."))
           continue;
-        if (!await isDirEntryOrSymlinkToDir(entry, join2(dir, entry.name)))
+        if (!await isDirEntryOrSymlinkToDir(entry, join(dir, entry.name)))
           continue;
-        if (!await hasSkillMd(join2(dir, entry.name)))
+        if (!await hasSkillMd(join(dir, entry.name)))
           continue;
         skillNamesSet.add(entry.name);
       }
@@ -20379,13 +20201,13 @@ async function scanInstalledSkillNames(isGlobal, cwd, onWarn) {
   };
   if (isGlobal) {
     await scanDir(getCanonicalSkillsDir(true, cwd));
-    for (const agent2 of Object.values(agents))
-      if (agent2.globalSkillsDir !== undefined)
-        await scanDir(agent2.globalSkillsDir);
+    for (const agent of Object.values(agents))
+      if (agent.globalSkillsDir !== undefined)
+        await scanDir(agent.globalSkillsDir);
   } else {
     await scanDir(getCanonicalSkillsDir(false, cwd));
-    for (const agent2 of Object.values(agents))
-      await scanDir(join2(cwd, agent2.skillsDir));
+    for (const agent of Object.values(agents))
+      await scanDir(join(cwd, agent.skillsDir));
     for (const subagent of getEveSubagents(cwd))
       await scanDir(getEveSubagentSkillsDir(subagent, cwd));
   }
@@ -20420,20 +20242,20 @@ async function removeInstalledSkills(skills, options) {
         cwd
       });
       for (const agentKey of targetAgents) {
-        const agent2 = agents[agentKey];
+        const agent = agents[agentKey];
         const skillPath = getInstallPath(skillName, agentKey, {
           global: isGlobal,
           cwd
         });
         const pathsToCleanup = /* @__PURE__ */ new Set([skillPath]);
         const sanitizedName = sanitizeName(skillName);
-        if (isGlobal && agent2.globalSkillsDir)
-          pathsToCleanup.add(join2(agent2.globalSkillsDir, sanitizedName));
+        if (isGlobal && agent.globalSkillsDir)
+          pathsToCleanup.add(join(agent.globalSkillsDir, sanitizedName));
         else {
-          pathsToCleanup.add(join2(cwd, agent2.skillsDir, sanitizedName));
+          pathsToCleanup.add(join(cwd, agent.skillsDir, sanitizedName));
           if (agentKey === "eve")
             for (const subagent of getEveSubagents(cwd))
-              pathsToCleanup.add(join2(getEveSubagentSkillsDir(subagent, cwd), sanitizedName));
+              pathsToCleanup.add(join(getEveSubagentSkillsDir(subagent, cwd), sanitizedName));
         }
         for (const pathToCleanup of pathsToCleanup) {
           if (pathToCleanup === canonicalPath)
@@ -20451,7 +20273,7 @@ async function removeInstalledSkills(skills, options) {
               force: true
             });
           } catch (err) {
-            options.onWarn?.(`Could not remove skill from ${agent2.displayName}: ${err instanceof Error ? err.message : String(err)}`);
+            options.onWarn?.(`Could not remove skill from ${agent.displayName}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
@@ -20528,7 +20350,7 @@ function trackRemovals(results, targetAgents, isGlobal) {
 
 // node_modules/skills/dist/index.mjs
 import { existsSync as existsSync2 } from "fs";
-import { join as join3, posix as posix2, relative as relative2, sep as sep2 } from "path";
+import { join as join2, posix as posix2, relative as relative2, sep as sep2 } from "path";
 import { lstat as lstat2, readdir as readdir2 } from "fs/promises";
 function resolveConfig(options = {}) {
   const config = options.config ?? {};
@@ -20585,10 +20407,10 @@ function assertKnownAgents(ids) {
       valid: Object.keys(agents)
     });
 }
-function isAgentAllowed(agent2, config) {
-  if (config.include && !config.include.includes(agent2))
+function isAgentAllowed(agent, config) {
+  if (config.include && !config.include.includes(agent))
     return false;
-  return !config.exclude?.includes(agent2);
+  return !config.exclude?.includes(agent);
 }
 var agentInfos;
 function toAgentInfo(id) {
@@ -20605,7 +20427,7 @@ function getSupportedAgents() {
   agentInfos ??= Object.freeze(Object.keys(agents).map(toAgentInfo));
   return agentInfos;
 }
-async function detectAgents2(options = {}) {
+async function detectAgents(options = {}) {
   const config = resolveConfig(options);
   options.signal?.throwIfAborted();
   const detected = await detectInstalledAgents(config.cwd);
@@ -20815,9 +20637,9 @@ async function install(source, options, config, requested) {
     const placement = {
       global: config.scope === "global",
       cwd: config.cwd,
-      targets: targets.map((agent2) => ({ agent: agent2 })),
-      mode: config.mode === "auto" ? defaultInstallMode(targets.map((agent2) => ({ agent: agent2 }))) : config.mode,
-      createMissingAgentRoot: (agent2) => explicit.has(agent2)
+      targets: targets.map((agent) => ({ agent })),
+      mode: config.mode === "auto" ? defaultInstallMode(targets.map((agent) => ({ agent }))) : config.mode,
+      createMissingAgentRoot: (agent) => explicit.has(agent)
     };
     options.onProgress?.({
       type: "install:start",
@@ -20884,19 +20706,19 @@ async function resolveTargets(requested, config, skills) {
   const global = config.scope === "global";
   const targets = [];
   const failures = [];
-  const fail = (agent2, diagnostic) => {
+  const fail = (agent, diagnostic) => {
     if (!named)
       return;
     for (const skill of skills)
-      failures.push(failure(getSkillDisplayName(skill), agent2, diagnostic));
+      failures.push(failure(getSkillDisplayName(skill), agent, diagnostic));
   };
-  for (const agent2 of candidates)
-    if (!isAgentAllowed(agent2, config.agents))
-      fail(agent2, diagnostics.SKILLS_AGENT_NOT_ALLOWED({ agents: [agent2] }));
-    else if (global && agents[agent2].globalSkillsDir === undefined)
-      fail(agent2, diagnostics.SKILLS_GLOBAL_INSTALL_UNSUPPORTED({ agent: agents[agent2].displayName }));
+  for (const agent of candidates)
+    if (!isAgentAllowed(agent, config.agents))
+      fail(agent, diagnostics.SKILLS_AGENT_NOT_ALLOWED({ agents: [agent] }));
+    else if (global && agents[agent].globalSkillsDir === undefined)
+      fail(agent, diagnostics.SKILLS_GLOBAL_INSTALL_UNSUPPORTED({ agent: agents[agent].displayName }));
     else
-      targets.push(agent2);
+      targets.push(agent);
   if (targets.length === 0)
     throw diagnostics.SKILLS_NO_TARGET_AGENTS();
   return {
@@ -20904,10 +20726,10 @@ async function resolveTargets(requested, config, skills) {
     failures
   };
 }
-function failure(skill, agent2, diagnostic) {
+function failure(skill, agent, diagnostic) {
   return Object.freeze({
     skill,
-    agent: agent2,
+    agent,
     code: diagnostic.code,
     message: diagnostic.message
   });
@@ -21002,7 +20824,7 @@ async function findSymlinks(fetched, skill) {
       if (entry.isSymbolicLink())
         links.push(entryRel);
       else if (entry.isDirectory() && entry.name !== ".git")
-        await walk(join3(dir, entry.name), entryRel);
+        await walk(join2(dir, entry.name), entryRel);
     }
   };
   await walk(skill.path, "");
@@ -21062,10 +20884,10 @@ async function remove(names, options) {
       expected: "an array of non-empty strings"
     });
   assertKnownAgents(options.agents);
-  const disallowed = options.agents?.filter((agent2) => !isAgentAllowed(agent2, config.agents));
+  const disallowed = options.agents?.filter((agent) => !isAgentAllowed(agent, config.agents));
   if (disallowed && disallowed.length > 0)
     throw diagnostics.SKILLS_AGENT_NOT_ALLOWED({ agents: disallowed });
-  const targetAgents = (options.agents ?? Object.keys(agents)).filter((agent2) => isAgentAllowed(agent2, config.agents));
+  const targetAgents = (options.agents ?? Object.keys(agents)).filter((agent) => isAgentAllowed(agent, config.agents));
   if (targetAgents.length === 0)
     throw diagnostics.SKILLS_NO_TARGET_AGENTS();
   options.signal?.throwIfAborted();
@@ -21133,7 +20955,7 @@ function readProjectLock(cwd) {
 
 // src/skills-lib.ts
 import { mkdtemp as mkdtemp2, readFile as readFile2, rm as rm2 } from "node:fs/promises";
-import { basename as basename2, join as join4 } from "node:path";
+import { basename as basename2, join as join3 } from "node:path";
 function sanitizeName2(name) {
   return name.toLowerCase().replace(/[^a-z0-9._]+/g, "-").replace(/^[.\-]+|[.\-]+$/g, "").substring(0, 255) || "unnamed-skill";
 }
@@ -21162,7 +20984,7 @@ function toDiagnostic(failure2) {
   return out;
 }
 async function readLockKeys(cwd) {
-  const path2 = join4(cwd, "skills-lock.json");
+  const path2 = join3(cwd, "skills-lock.json");
   let raw;
   try {
     raw = await readFile2(path2, "utf8");
@@ -21214,7 +21036,7 @@ function createSkillsLib(api) {
       return resolved;
     },
     async stage(source, names, tmpdir2) {
-      const root = await mkdtemp2(join4(tmpdir2, "stage-"));
+      const root = await mkdtemp2(join3(tmpdir2, "stage-"));
       try {
         const result = await api.installSkills(libraryOf(source), {
           cwd: root,
@@ -21272,10 +21094,16 @@ function createSkillsLib(api) {
 
 // src/skills-real.ts
 var realSkillsLib = createSkillsLib(exports_dist);
+async function realLibAgents(home2) {
+  const { agents: agents2 } = await detectAgents({ cwd: home2, config: { telemetry: false } });
+  return new Set(agents2.map((agent) => agent.id));
+}
 
 // src/trash.ts
 import { execFile as execFile2 } from "node:child_process";
 var TRASH_BIN = "/usr/bin/trash";
+var GIO_BIN = "/usr/bin/gio";
+var TRASH_VERIFIED = new Set(["darwin"]);
 var execRunner = (file, args) => new Promise((resolve2, reject) => {
   execFile2(file, [...args], { encoding: "utf8" }, (error, stdout, stderr) => {
     if (!error)
@@ -21286,14 +21114,26 @@ var execRunner = (file, args) => new Promise((resolve2, reject) => {
     reject(error);
   });
 });
-function systemTrasher(platform2, exists, run) {
-  if (platform2 !== "darwin" || !exists(TRASH_BIN))
-    return null;
-  return async (paths) => {
-    const { code, stderr } = await run(TRASH_BIN, paths);
+var COMMANDS = {
+  darwin: { bin: TRASH_BIN, args: (paths) => [...paths] },
+  linux: { bin: GIO_BIN, args: (paths) => ["trash", "--", ...paths] }
+};
+function systemTrasher(platform2, exists, run, verified = TRASH_VERIFIED) {
+  if (platform2 === "win32")
+    return { trasher: null, status: "unverified" };
+  const command = Object.prototype.hasOwnProperty.call(COMMANDS, platform2) ? COMMANDS[platform2] : undefined;
+  if (!command)
+    return { trasher: null, status: "missing" };
+  if (!verified.has(platform2))
+    return { trasher: null, status: "unverified" };
+  if (!exists(command.bin))
+    return { trasher: null, status: "missing" };
+  const trasher = async (paths) => {
+    const { code, stderr } = await run(command.bin, command.args(paths));
     if (code !== 0)
-      throw new Error(stderr.trim() || `trash exited with code ${code}`);
+      throw new Error(stderr.trim() || `${command.bin} exited with code ${code}`);
   };
+  return { trasher, status: "ready" };
 }
 
 // src/worker-core.ts
@@ -21301,55 +21141,96 @@ import { randomUUID } from "node:crypto";
 import { lstat as lstat7, mkdir as mkdir4, realpath as realpath6, stat as stat4 } from "node:fs/promises";
 import { join as join9 } from "node:path";
 
-// src/exclusions.ts
-var EXCLUSIONS_KEY = "exclusions.v1";
-function isRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+// src/agents.ts
+function agent(id, label, signals = {}) {
+  return {
+    id,
+    label,
+    libIds: signals.libIds ?? [],
+    configDirs: signals.configDirs ?? [],
+    icon: `agent-icons/${id}.png`
+  };
 }
-function compact(entries) {
-  return Object.fromEntries([...entries].filter((entry) => entry[1] !== null));
+var AGENTS = [
+  agent("claude", "Claude", { libIds: ["claude-code"] }),
+  agent("claude-agent-teams", "Claude Agent Teams"),
+  agent("openclaude", "OpenClaude", { configDirs: [".openclaude"] }),
+  agent("codex", "Codex", { libIds: ["codex"] }),
+  agent("grok", "Grok", { libIds: ["grok"] }),
+  agent("copilot", "GitHub Copilot", { libIds: ["github-copilot"] }),
+  agent("opencode2", "OpenCode 2"),
+  agent("opencode", "OpenCode", { libIds: ["opencode"] }),
+  agent("mimo-code", "MiMo Code", { configDirs: [".config/mimocode"] }),
+  agent("ante", "Ante", { configDirs: [".ante"] }),
+  agent("trae", "Trae", { libIds: ["trae"] }),
+  agent("muse", "Muse"),
+  agent("dsh", "DeepSeek Harness", { configDirs: [".dsh"] }),
+  agent("qoder", "Qoder CLI", { libIds: ["qoder"] }),
+  agent("qoder-cn", "Qoder CLI China", { libIds: ["qoder-cn"] }),
+  agent("zcode", "ZCode", { libIds: ["zcode"] }),
+  agent("pi", "Pi", { libIds: ["pi"] }),
+  agent("omp", "OMP", { configDirs: [".omp"] }),
+  agent("prime-agent", "Prime Agent", { configDirs: [".prime/agent"] }),
+  agent("gemini", "Gemini", { libIds: ["gemini-cli"] }),
+  agent("antigravity", "Antigravity", { libIds: ["antigravity-cli", "antigravity"] }),
+  agent("aider", "Aider"),
+  agent("goose", "Goose", { libIds: ["goose"] }),
+  agent("amp", "Amp", { libIds: ["amp"] }),
+  agent("kilo", "Kilocode", { libIds: ["kilo"] }),
+  agent("kiro", "Kiro", { libIds: ["kiro-cli"] }),
+  agent("crush", "Charm", { libIds: ["crush"] }),
+  agent("aug", "Auggie", { libIds: ["augment"] }),
+  agent("autohand", "Autohand Code", { libIds: ["autohand-code"] }),
+  agent("cline", "Cline", { libIds: ["cline"] }),
+  agent("codebuff", "Codebuff", { configDirs: [".config/manicode"] }),
+  agent("freebuff", "Freebuff", { configDirs: [".config/manicode"] }),
+  agent("command-code", "Command Code", { libIds: ["command-code"] }),
+  agent("continue", "Continue", { libIds: ["continue"] }),
+  agent("cursor", "Cursor", { libIds: ["cursor"] }),
+  agent("droid", "Droid", { libIds: ["droid"] }),
+  agent("kimi", "Kimi", { libIds: ["kimi-code-cli"] }),
+  agent("mistral-vibe", "Mistral Vibe", { libIds: ["mistral-vibe"] }),
+  agent("qwen-code", "Qwen Code", { libIds: ["qwen-code"] }),
+  agent("rovo", "Rovo Dev", { libIds: ["rovodev"] }),
+  agent("hermes", "Hermes", { libIds: ["hermes-agent"] }),
+  agent("devin", "Devin", { libIds: ["devin"] }),
+  agent("openclaw", "OpenClaw", { libIds: ["openclaw"] }),
+  agent("codebuddy", "CodeBuddy", { libIds: ["codebuddy"] }),
+  agent("jcode", "Jcode", { configDirs: [".jcode"] })
+];
+var HISTORY_AGENTS = new Set([
+  "claude",
+  "codebuddy",
+  "qoder",
+  "codex",
+  "hermes",
+  "pi",
+  "omp",
+  "prime-agent",
+  "cursor",
+  "gemini",
+  "antigravity",
+  "rovo",
+  "copilot",
+  "opencode",
+  "opencode2",
+  "zcode",
+  "grok",
+  "openclaw",
+  "devin",
+  "droid",
+  "cline",
+  "kimi",
+  "muse",
+  "jcode",
+  "kiro"
+]);
+function agentById(id) {
+  return AGENTS.find((spec) => spec.id === id);
 }
-function parseExclusions(raw) {
-  if (!isRecord2(raw))
-    return {};
-  const projects = [];
-  for (const [projectKey, skills] of Object.entries(raw)) {
-    if (!isRecord2(skills))
-      return {};
-    const folders = [];
-    for (const [folder, agents2] of Object.entries(skills)) {
-      if (!Array.isArray(agents2) || !agents2.every((agent2) => typeof agent2 === "string"))
-        return {};
-      const unique = [...new Set(agents2)];
-      folders.push([folder, unique.length > 0 ? unique : null]);
-    }
-    const kept = compact(folders);
-    projects.push([projectKey, Object.keys(kept).length > 0 ? kept : null]);
-  }
-  return compact(projects);
-}
-function excludedOf(ex, projectKey, folder) {
-  if (!Object.hasOwn(ex, projectKey))
-    return [];
-  const skills = ex[projectKey];
-  return Object.hasOwn(skills, folder) ? skills[folder] : [];
-}
-function withAgents(ex, projectKey, folder, agents2) {
-  const skills = Object.hasOwn(ex, projectKey) ? ex[projectKey] : {};
-  const nextSkills = compact([
-    ...Object.entries(skills).filter(([name]) => name !== folder),
-    [folder, agents2.length > 0 ? agents2 : null]
-  ]);
-  const others = Object.entries(ex).filter(([key]) => key !== projectKey);
-  return compact([...others, [projectKey, Object.keys(nextSkills).length > 0 ? nextSkills : null]]);
-}
-function exclude(ex, projectKey, folder, agents2) {
-  return withAgents(ex, projectKey, folder, [...new Set([...excludedOf(ex, projectKey, folder), ...agents2])]);
-}
-function include(ex, projectKey, folder, agents2) {
-  const current = excludedOf(ex, projectKey, folder);
-  const left = agents2 ? current.filter((agent2) => !agents2.includes(agent2)) : [];
-  return withAgents(ex, projectKey, folder, left);
+function byLabel(ids) {
+  const labelOf = (id) => agentById(id)?.label ?? id;
+  return [...ids].sort((a2, b4) => labelOf(a2).localeCompare(labelOf(b4), "en", { sensitivity: "base" }));
 }
 
 // src/hidden-agents.ts
@@ -21369,6 +21250,70 @@ function setHidden(hidden, installed, agent2, hide) {
   return visible.length === 0 ? hidden : [...hidden, agent2];
 }
 
+// src/history.ts
+var HISTORY_LIMIT = 200;
+var codeOf = (error) => {
+  const code = error?.code;
+  return typeof code === "string" ? code : "error";
+};
+async function listHistoryAgents(call, has, log2) {
+  if (!has("agent.listSessions")) {
+    log2("history unavailable reason=no-method");
+    return null;
+  }
+  let sessions;
+  try {
+    try {
+      sessions = (await call("agent.listSessions", { limit: HISTORY_LIMIT })).sessions;
+    } catch (error) {
+      if (codeOf(error) !== "invalid_params")
+        throw error;
+      sessions = (await call("agent.listSessions")).sessions;
+    }
+  } catch (error) {
+    log2(`history unavailable reason=${codeOf(error)}`);
+    return null;
+  }
+  if (!Array.isArray(sessions) || sessions.some((session) => typeof session !== "object" || session === null)) {
+    log2("history unavailable reason=malformed");
+    return null;
+  }
+  const agents2 = new Set;
+  for (const session of sessions)
+    if (typeof session.agent === "string")
+      agents2.add(session.agent);
+  return agents2.size === 0 ? null : agents2;
+}
+
+// src/inventory.ts
+import { join as join4 } from "node:path";
+function installedAgents(history, lib, hasConfigDir) {
+  const seen = new Set;
+  for (const spec of AGENTS)
+    if (history?.has(spec.id))
+      seen.add(spec.id);
+  const useHistory = seen.size > 0;
+  const agents2 = AGENTS.filter((spec) => {
+    if (useHistory && seen.has(spec.id))
+      return true;
+    if (useHistory && HISTORY_AGENTS.has(spec.id))
+      return false;
+    return spec.libIds.some((id) => lib.has(id)) || spec.configDirs.some((dir) => hasConfigDir(dir));
+  }).map((spec) => spec.id);
+  return { agents: agents2, source: useHistory ? "history" : "dirs" };
+}
+async function detectAgents2(deps, home2, history, log2) {
+  const [seen, lib] = await Promise.all([
+    history(),
+    deps.libAgents(home2).catch(() => {
+      log2("config dirs: library detection failed");
+      return new Set;
+    })
+  ]);
+  const { agents: agents2, source } = installedAgents(seen, lib, (dir) => deps.exists(join4(home2, dir)));
+  return { agents: agents2, source, detectedAt: deps.now() };
+}
+
 // src/operations.ts
 import { lstat as lstat5, mkdir as mkdir3, realpath as realpath4 } from "node:fs/promises";
 import { basename as basename3, join as join7 } from "node:path";
@@ -21379,27 +21324,34 @@ import { copyFile, lstat as lstat3, mkdir as mkdir2, readdir as readdir3, readFi
 import { dirname as dirname2, join as join5 } from "node:path";
 
 // src/paths.ts
-import { isAbsolute as isAbsolute2, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
-function resolveInputPath(text, root, home2) {
+import * as nodePath from "node:path";
+function resolveInputPath(text, root, home2, path2 = nodePath) {
   if (text === "~")
-    return resolve2(home2);
-  if (text.startsWith("~/"))
-    return resolve2(home2, text.slice(2));
-  return resolve2(root, text);
+    return path2.resolve(home2);
+  if (text.startsWith("~/") || path2.sep === "\\" && text.startsWith("~\\"))
+    return path2.resolve(home2, text.slice(2));
+  return path2.resolve(root, text);
 }
-function abbreviateHome(path2, home2) {
-  const base = home2.length > 1 ? home2.replace(/\/+$/, "") : home2;
-  if (path2 === base)
+function abbreviateHome(path2, home2, pathApi = nodePath) {
+  const win = pathApi.sep === "\\";
+  const trimmed = home2.length > 1 ? home2.replace(win ? /[\\/]+$/ : /\/+$/, "") : home2;
+  const norm = (value) => win ? value.replace(/\//g, "\\").toLowerCase() : value;
+  const base = norm(trimmed);
+  const subject = norm(path2);
+  if (subject === base)
     return "~";
-  if (base !== "/" && path2.startsWith(`${base}/`))
-    return `~${path2.slice(base.length)}`;
+  if (base !== pathApi.sep && subject.startsWith(`${base}${pathApi.sep}`))
+    return `~${path2.slice(trimmed.length)}`;
   return path2;
 }
+function isNetworkPath(path2, platform2) {
+  return platform2 === "win32" && path2.startsWith("\\\\");
+}
 function isInside(child, parent) {
-  const rel = relative3(parent, child);
+  const rel = nodePath.relative(parent, child);
   if (rel === "")
     return true;
-  return rel !== ".." && !rel.startsWith(`..${sep3}`) && !isAbsolute2(rel);
+  return rel !== ".." && !rel.startsWith(`..${nodePath.sep}`) && !nodePath.isAbsolute(rel);
 }
 
 // src/fsops.ts
@@ -21681,66 +21633,9 @@ async function scanWorkspace(root) {
   return { skills: [...byFolder.values()].sort((a2, b4) => a2.folder < b4.folder ? -1 : a2.folder > b4.folder ? 1 : 0), unsafeDirs };
 }
 
-// src/visibility.ts
-function sourceLabel(entry, home2) {
-  if (!entry)
-    return { kind: "handwritten" };
-  if (entry.source.startsWith("/"))
-    return { kind: "local", path: abbreviateHome(entry.source, home2) };
-  return { kind: "remote", source: entry.source };
-}
-var dirOrder = (copy) => MANAGED_DIRS.indexOf(copy.dir);
-function contentOf(copy, copies) {
-  if (copy.kind !== "internal-link")
-    return copy.hash;
-  const target = copies.find((other) => other.kind === "dir" && other.realPath === copy.realPath);
-  return target ? target.hash : copy.hash;
-}
-function versionsOf(copies) {
-  const byHash = new Map;
-  for (const copy of copies) {
-    const hash = contentOf(copy, copies);
-    const dirs = byHash.get(hash);
-    if (dirs)
-      dirs.push(copy.dir);
-    else
-      byHash.set(hash, [copy.dir]);
-  }
-  return [...byHash].map(([hash, dirs]) => ({ hash, dirs }));
-}
-function buildRow(disk, source, active, excludedAgents) {
-  const copies = [...disk.copies].sort((a2, b4) => dirOrder(a2) - dirOrder(b4));
-  const heldDirs = new Set(copies.map((copy) => copy.dir));
-  const agents2 = active.map((agent2) => {
-    const via = MANAGED_DIRS.filter((dir) => heldDirs.has(dir) && readers(dir, [agent2]).length > 0);
-    const state = via.length > 0 ? "sees" : excludedAgents.has(agent2) ? "excluded" : "absent";
-    return { agent: agent2, state, via };
-  });
-  return {
-    folder: disk.folder,
-    displayName: disk.displayName,
-    description: disk.description,
-    source,
-    agents: agents2,
-    missingFor: agents2.filter((a2) => a2.state === "absent").map((a2) => a2.agent),
-    excluded: agents2.filter((a2) => a2.state === "excluded").map((a2) => a2.agent),
-    versions: versionsOf(copies),
-    copies: copies.map((copy) => ({
-      dir: copy.dir,
-      kind: copy.kind,
-      feeds: readers(copy.dir, active),
-      linkedFrom: copy.kind === "dir" ? copies.filter((o2) => o2.kind === "internal-link" && o2.realPath === copy.realPath && o2.dir !== copy.dir).map((o2) => o2.dir) : []
-    }))
-  };
-}
-function buildRows(scan, lock, active, exclusionsFor, home2) {
-  const capable = skillCapable(active);
-  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home2), capable, new Set(exclusionsFor(disk.folder))));
-}
-
 // src/operations.ts
 var fail = (error) => ({ ok: false, error });
-var done = (warnings, lostAgents = []) => ({ ok: true, warnings, lostAgents });
+var done = (warnings) => ({ ok: true, warnings });
 function libError(error, trashed = false) {
   return { code: "lib", diagnostics: [toLibDiagnostic(error)], ...trashed ? { trashed: true } : {} };
 }
@@ -21773,10 +21668,6 @@ async function readDisk(root) {
   return { scan, unsafe };
 }
 var skillOf = (scan, folder) => scan.skills.find((skill) => skill.folder === folder);
-function agentsSeeing(scan, ctx, folder) {
-  const row = buildRows(scan, new Map, ctx.active, () => [], ctx.home).find((candidate) => candidate.folder === folder);
-  return row ? row.agents.filter((agent2) => agent2.state === "sees").map((agent2) => agent2.agent) : [];
-}
 async function moveToTrash(trash, paths) {
   if (paths.length === 0)
     return null;
@@ -21843,7 +21734,7 @@ async function addSkills(ctx, source, names, replace) {
       if (!replace)
         return fail({ code: "collision", folders: collidingFolders });
       if (!ctx.trash)
-        return fail({ code: "no-trash" });
+        return fail({ code: ctx.noTrashCode });
       const trashError = await moveToTrash(ctx.trash, collidingPaths);
       if (trashError)
         return fail(trashError);
@@ -21922,7 +21813,7 @@ async function keepVersion(ctx, folder, hash) {
   if (stale.length === 0)
     return done([]);
   if (!ctx.trash)
-    return fail({ code: "no-trash" });
+    return fail({ code: ctx.noTrashCode });
   const trashError = await moveToTrash(ctx.trash, stale.map((copy) => copy.path));
   if (trashError)
     return fail(trashError);
@@ -21937,7 +21828,7 @@ async function keepVersion(ctx, folder, hash) {
 }
 async function removeSkill(ctx, folder) {
   if (!ctx.trash)
-    return fail({ code: "no-trash" });
+    return fail({ code: ctx.noTrashCode });
   const disk = await readDisk(ctx.root);
   if (!disk)
     return fail({ code: "no-workspace" });
@@ -21988,43 +21879,76 @@ async function removeSkill(ctx, folder) {
   }
   return done(warnings);
 }
-async function removeFromDir(ctx, folder, dir) {
-  if (!ctx.trash)
-    return fail({ code: "no-trash" });
-  const disk = await readDisk(ctx.root);
-  if (!disk)
-    return fail({ code: "no-workspace" });
-  if (disk.unsafe.includes(dir))
-    return fail({ code: "unsafe-dir", dirs: [dir] });
-  const skill = skillOf(disk.scan, folder);
-  const copy = skill?.copies.find((candidate) => candidate.dir === dir);
-  if (!skill || !copy)
-    return fail({ code: "gone" });
-  if (copy.kind === "dir") {
-    const linkedFrom = skill.copies.filter((other) => other.kind === "internal-link" && other.realPath === copy.realPath && other.dir !== dir).map((other) => other.dir);
-    if (linkedFrom.length > 0)
-      return fail({ code: "linked-target", dirs: linkedFrom });
+
+// src/visibility.ts
+import * as nodePath2 from "node:path";
+function sourceLabel(entry, home2, pathApi = nodePath2) {
+  if (!entry)
+    return { kind: "handwritten" };
+  if (pathApi.isAbsolute(entry.source))
+    return { kind: "local", path: abbreviateHome(entry.source, home2, pathApi) };
+  return { kind: "remote", source: entry.source };
+}
+var dirOrder = (copy) => MANAGED_DIRS.indexOf(copy.dir);
+function contentOf(copy, copies) {
+  if (copy.kind !== "internal-link")
+    return copy.hash;
+  const target = copies.find((other) => other.kind === "dir" && other.realPath === copy.realPath);
+  return target ? target.hash : copy.hash;
+}
+function versionsOf(copies) {
+  const byHash = new Map;
+  for (const copy of copies) {
+    const hash = contentOf(copy, copies);
+    const dirs = byHash.get(hash);
+    if (dirs)
+      dirs.push(copy.dir);
+    else
+      byHash.set(hash, [copy.dir]);
   }
-  const before = agentsSeeing(disk.scan, ctx, folder);
-  if (skill.copies.length === 1) {
-    const removed = await removeSkill(ctx, folder);
-    return removed.ok ? { ...removed, lostAgents: before, removedAll: true } : removed;
-  }
-  const trashError = await moveToTrash(ctx.trash, [copy.path]);
-  if (trashError)
-    return fail(trashError);
-  const after = agentsSeeing(await scanWorkspace(ctx.root), ctx, folder);
-  return done([], before.filter((agent2) => !after.includes(agent2)));
+  return [...byHash].map(([hash, dirs]) => ({ hash, dirs }));
+}
+function buildRow(disk, source, active) {
+  const copies = [...disk.copies].sort((a2, b4) => dirOrder(a2) - dirOrder(b4));
+  const heldDirs = new Set(copies.map((copy) => copy.dir));
+  const agents2 = active.map((agent2) => {
+    const via = MANAGED_DIRS.filter((dir) => heldDirs.has(dir) && readers(dir, [agent2]).length > 0);
+    return { agent: agent2, state: via.length > 0 ? "sees" : "absent", via };
+  });
+  return {
+    folder: disk.folder,
+    displayName: disk.displayName,
+    description: disk.description,
+    source,
+    agents: agents2,
+    missingFor: agents2.filter((a2) => a2.state === "absent").map((a2) => a2.agent),
+    external: copies.some((copy) => copy.kind === "external-link"),
+    versions: versionsOf(copies),
+    copies: copies.map((copy) => ({ dir: copy.dir, kind: copy.kind, feeds: readers(copy.dir, active) }))
+  };
+}
+function buildRows(scan, lock, active, home2, pathApi = nodePath2) {
+  const capable = skillCapable(active);
+  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home2, pathApi), capable));
 }
 
 // src/workspace.ts
 import { lstat as lstat6, realpath as realpath5 } from "node:fs/promises";
 import { join as join8 } from "node:path";
+function classifyRoot(path2, platform2) {
+  if (isNetworkPath(path2, platform2))
+    return "unc";
+  if (/^[A-Za-z]:[\\/]/.test(path2))
+    return "drive";
+  if (path2.startsWith("/"))
+    return "posix";
+  return "other";
+}
 var isRemoteHost = (hostId) => hostId !== null && (hostId.startsWith("ssh:") || hostId.startsWith("runtime:"));
 async function isLinkedWorktree(root) {
   return (await lstat6(join8(root, ".git")).catch(() => null))?.isFile() ?? false;
 }
-async function resolveWorkspace(call, home2, log2 = () => {}) {
+async function resolveWorkspace(call, home2, platform2, log2 = () => {}, realpathFn = realpath5) {
   const context = await call("workspace.readContext", {});
   const id = context?.workspaceId;
   if (!context || !id)
@@ -22036,31 +21960,36 @@ async function resolveWorkspace(call, home2, log2 = () => {}) {
       log2("workspace not found in a truncated workspace.list, treated as none");
     return { view: { status: "none" } };
   }
+  const shape = classifyRoot(row.path, platform2);
+  log2(`workspace root shape=${shape}`);
   if (isRemoteHost(row.hostId))
     return { view: { status: "remote" } };
-  const real = await realpath5(row.path).catch(() => null);
+  if (platform2 === "win32" && shape === "posix")
+    return { view: { status: "wsl" } };
+  const real = await realpathFn(row.path).catch(() => null);
   if (real === null)
     return { view: { status: "missing" } };
-  if (real === await realpath5(home2).catch(() => home2))
+  if (real === await realpathFn(home2).catch(() => home2))
     return { view: { status: "home" } };
   return {
     root: row.path,
-    projectKey: row.projectId ?? row.id,
     view: {
       status: "ready",
       id: row.id,
       name: row.name,
       branch: row.branch ?? (context.branch === "" ? null : context.branch),
-      linkedWorktree: await isLinkedWorktree(row.path)
+      linkedWorktree: await isLinkedWorktree(row.path),
+      network: isNetworkPath(row.path, platform2)
     }
   };
 }
 
 // src/worker-core.ts
+var ENV_NAMES = ["HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
 var INVENTORY_TTL_MS = 1e4;
 var PREVIEW_TTL_MS = 10 * 60000;
 var messageOf = (error) => error instanceof Error ? error.message : String(error);
-var codeOf = (error) => toLibDiagnostic(error).code;
+var codeOf2 = (error) => toLibDiagnostic(error).code;
 var libFailure = (error) => ({ code: "lib", diagnostics: [toLibDiagnostic(error)] });
 function describeError(error) {
   const codes = (error.diagnostics ?? []).map((diagnostic) => diagnostic.code).join(",");
@@ -22068,6 +21997,7 @@ function describeError(error) {
 }
 var folderOf = (op) => op.kind === "add" ? op.names.join(",") : op.folder;
 var WORKSPACE_CHANGED = { code: "workspace-changed" };
+var onNetwork = (view) => view.status === "ready" && view.network;
 var isShownWorkspace = (focused, workspaceId) => focused.view.status === "ready" && focused.view.id === workspaceId;
 async function overlapsManagedDirs(path2, root) {
   const rootReal = await realpath6(root).catch(() => null);
@@ -22104,7 +22034,15 @@ function reusingTrial(lib, trial) {
 }
 async function activateWith(orca, deps) {
   const hostCall = orca.host.call.bind(orca.host);
-  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, (line) => orca.log(line));
+  let lastShapeLine = "";
+  const focusedWorkspace = () => resolveWorkspace(hostCall, deps.home, deps.platform, (line) => {
+    if (line.startsWith("workspace root shape=")) {
+      if (line === lastShapeLine)
+        return;
+      lastShapeLine = line;
+    }
+    orca.log(line);
+  }, deps.realpath);
   let inventory = null;
   let probing = null;
   let writing = Promise.resolve();
@@ -22113,8 +22051,16 @@ async function activateWith(orca, deps) {
   let previewTicket = 0;
   let stateTicket = 0;
   function probe() {
-    const run = detectAgents(deps.inventory, () => orca.log("shell probe failed, PATH fallback")).then(({ inventory: next }) => {
+    const log2 = (line) => orca.log(line);
+    const readHistory = async () => {
+      const seen = await listHistoryAgents(hostCall, (method) => orca.host.has(method), log2);
+      if (seen)
+        log2(`history agents=${[...seen].filter((id) => agentById(id) !== undefined).sort().join(",")}`);
+      return seen;
+    };
+    const run = detectAgents2(deps.inventory, deps.home, readHistory, log2).then((next) => {
       inventory = next;
+      orca.log(`inventory source=${next.source} agents=${next.agents.length}`);
       return next;
     }).finally(() => {
       if (probing === run)
@@ -22137,13 +22083,15 @@ async function activateWith(orca, deps) {
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`);
     }
-    const installed = found ? skillCapable(found.agents) : [];
+    const installed = found ? byLabel(skillCapable(found.agents)) : [];
     const hidden = await readHidden();
     const active = installed.filter((id) => !hidden.includes(id));
     if (active.length === 0)
       return { installed, hidden, active: [], fallback: true, writeDirs: FALLBACK_DIRS };
     return { installed, hidden, active, fallback: false, writeDirs: writeSet(active) };
   }
+  const present = ENV_NAMES.filter((name) => deps.env[name] !== undefined);
+  orca.log(`env present=${present.length > 0 ? present.join(",") : "none"}`);
   listInventory(false).catch((error) => orca.log(`inventory failed: ${messageOf(error)}`));
   function serialize(task) {
     const run = writing.then(task);
@@ -22152,8 +22100,6 @@ async function activateWith(orca, deps) {
     });
     return run;
   }
-  const readExclusions = async () => parseExclusions(await orca.storage.get(EXCLUSIONS_KEY));
-  const writeExclusions = (next) => orca.storage.set(EXCLUSIONS_KEY, next);
   async function readHidden() {
     try {
       return parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY));
@@ -22162,19 +22108,11 @@ async function activateWith(orca, deps) {
       return [];
     }
   }
-  function updateExclusions(change) {
-    return serialize(async () => {
-      const current2 = await readExclusions();
-      const next = change(current2);
-      if (next !== current2)
-        await writeExclusions(next);
-    });
-  }
   async function readLock(root) {
     try {
       return { lock: await deps.lib.lockEntries(root), unreadable: false };
     } catch (error) {
-      orca.log(`lock unreadable code=${codeOf(error)}`);
+      orca.log(`lock unreadable code=${codeOf2(error)}`);
       return { lock: new Map, unreadable: true };
     }
   }
@@ -22190,15 +22128,15 @@ async function activateWith(orca, deps) {
       agents: agentViews(agents2.active),
       detected: agentViews(agents2.installed).map((view) => ({ ...view, hidden: agents2.hidden.includes(view.id) })),
       inventory: agents2.fallback ? "fallback" : "detected",
-      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null }
+      capabilities: { trash: onNetwork(focused.view) ? "network" : deps.trashStatus, folderPicker: deps.pickFolder !== null },
+      platform: deps.platform
     };
     if (!("root" in focused))
       return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current };
-    const { root, projectKey } = focused;
+    const { root } = focused;
     const scan = await scanWorkspace(root);
     const { lock, unreadable } = await readLock(root);
-    const stored = await readExclusions();
-    const rows = buildRows(scan, lock, agents2.active, (folder) => excludedOf(stored, projectKey, folder), deps.home);
+    const rows = buildRows(scan, lock, agents2.active, deps.home);
     return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current };
   }
   async function postState() {
@@ -22370,21 +22308,6 @@ ${hit.source}`) })) };
     for (const warning of warnings)
       orca.log(`op=${op.kind} folder=${folderOf(op)} warning=${warning.code}`);
   }
-  function exclusionChange(op, result, projectKey) {
-    switch (op.kind) {
-      case "remove-dir":
-        return result.removedAll ? (ex) => include(ex, projectKey, op.folder) : (ex) => exclude(ex, projectKey, op.folder, result.lostAgents);
-      case "propagate":
-        return (ex) => include(ex, projectKey, op.folder, op.agents);
-      case "reinstate":
-        return (ex) => include(ex, projectKey, op.folder, [op.agent]);
-      case "remove":
-        return (ex) => include(ex, projectKey, op.folder);
-      case "add":
-      case "keep":
-        return null;
-    }
-  }
   async function prepareAdd(op, ctx, held) {
     await mkdir4(ctx.tmpdir, { recursive: true });
     let trial;
@@ -22415,7 +22338,7 @@ ${hit.source}`) })) };
         if (!op.replace)
           return await refuse({ code: "collision", folders: colliding });
         if (!ctx.trash)
-          return await refuse({ code: "no-trash" });
+          return await refuse({ code: ctx.noTrashCode });
       }
       return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } };
     } catch (error) {
@@ -22435,13 +22358,9 @@ ${hit.source}`) })) };
         return keepVersion(ctx, op.folder, op.hash);
       case "remove":
         return removeSkill(ctx, op.folder);
-      case "remove-dir":
-        return removeFromDir(ctx, op.folder, op.dir);
-      case "reinstate":
-        return propagate(ctx, op.folder, [op.agent]);
     }
   }
-  async function execute(opId, op, ctx, held, projectKey) {
+  async function execute(opId, op, ctx, held) {
     let result;
     try {
       result = await runOp(op, ctx, held);
@@ -22450,21 +22369,12 @@ ${hit.source}`) })) };
     }
     if (op.kind === "add" && held && preview === held)
       releasePreview();
-    const extra = [];
-    try {
-      const change = result.ok ? exclusionChange(op, result, projectKey) : null;
-      if (change)
-        await updateExclusions(change);
-    } catch (error) {
-      orca.log(`op=${op.kind} folder=${folderOf(op)} warning=PLUGIN_EXCLUSIONS_FAILED`);
-      extra.push({ code: "PLUGIN_EXCLUSIONS_FAILED", message: messageOf(error) });
-    }
     if (result.ok)
       logWarnings(op, result.warnings);
     else
       logError(op, result.error);
     current = null;
-    const finished = result.ok ? { opId, op, ok: true, warnings: [...result.warnings, ...extra] } : { opId, op, ok: false, error: result.error, warnings: [] };
+    const finished = result.ok ? { opId, op, ok: true, warnings: result.warnings } : { opId, op, ok: false, error: result.error, warnings: [] };
     orca.panels.post("op.finished", finished);
     await postStateSafely();
   }
@@ -22479,14 +22389,14 @@ ${hit.source}`) })) };
     if (!isShownWorkspace(focused, workspaceId))
       return refuse(WORKSPACE_CHANGED);
     const agents2 = await agentsOf();
+    const network = onNetwork(focused.view);
     let ctx = {
       root: focused.root,
-      home: deps.home,
       lib: deps.lib,
-      trash: deps.trash,
+      trash: network ? null : deps.trash,
+      noTrashCode: network ? "network-path" : deps.trashStatus === "unverified" ? "trash-unverified" : "no-trash",
       tmpdir: deps.tmpdir,
-      writeDirs: agents2.writeDirs,
-      active: agents2.active
+      writeDirs: agents2.writeDirs
     };
     let held = null;
     if (op.kind === "add") {
@@ -22513,7 +22423,7 @@ ${hit.source}`) })) };
       ctx = prepared.ctx;
     }
     const opId = randomUUID();
-    execute(opId, op, ctx, held, focused.projectKey).catch((error) => {
+    execute(opId, op, ctx, held).catch((error) => {
       current = null;
       orca.log(`op=${op.kind} folder=${folderOf(op)} failed: ${messageOf(error)}`);
     });
@@ -22545,15 +22455,19 @@ ${hit.source}`) })) };
 
 // src/worker.ts
 function activate(orca) {
+  const { trasher, status } = systemTrasher(process.platform, existsSync3, execRunner);
   return activateWith(orca, {
     lib: realSkillsLib,
-    inventory: REAL_INVENTORY_DEPS,
-    trash: systemTrasher(process.platform, existsSync3, execRunner),
+    inventory: { libAgents: realLibAgents, exists: existsSync3, now: Date.now },
+    trash: trasher,
+    trashStatus: status,
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
     searchBase: SKILLS_SH,
     home: homedir2(),
-    tmpdir: tmpdir2()
+    tmpdir: tmpdir2(),
+    platform: process.platform,
+    env: process.env
   });
 }
 export {

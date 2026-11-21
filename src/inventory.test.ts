@@ -1,73 +1,96 @@
-// Inventaire : commandes trouvées par un shell simulé, jamais de lecture des fichiers d'Orca.
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+// Inventaire : historique d'Orca d'abord, dossiers de config ensuite. Tout est simulé, jamais de shell ni de fichier d'Orca.
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
 import { AGENTS } from './agents'
-import { findCommands, installedAgents, listInstalledAgents, parseShellProbe, probeTokens } from './inventory'
+import { detectAgents, installedAgents, type InventoryDeps } from './inventory'
 
-const ROMAIN_FOUND = new Set(['claude', 'codex', 'agy', 'grok', 'opencode', 'pi', 'dsh-tui', 'dsh', 'gemini'])
+const noDir = () => false
+const set = (...ids: string[]): ReadonlySet<string> => new Set(ids)
 
-test('keeps every installed agent, in Orca catalog order', () => {
-  const agents = installedAgents(ROMAIN_FOUND)
+test('history decides for history agents', () => {
+  // Kiro et Qoder sont dans l'historique d'Orca : leurs dossiers ne comptent pas.
+  const result = installedAgents(set('claude', 'codex'), set('kiro-cli', 'qoder'), noDir)
+  assert.deepEqual(result, { agents: ['claude', 'codex'], source: 'history' })
+})
+
+test('config dirs decide for agents the history cannot see', () => {
+  const result = installedAgents(set('claude'), set('trae'), (dir) => dir === '.dsh')
+  assert.deepEqual(result, { agents: ['claude', 'trae', 'dsh'], source: 'history' })
+})
+
+test('empty history falls back to config dirs for everyone', () => {
+  const result = installedAgents(null, set('claude-code', 'kiro-cli'), noDir)
+  assert.deepEqual(result, { agents: ['claude', 'kiro'], source: 'dirs' })
+})
+
+test('unknown history ids are ignored, known ones count', () => {
+  const result = installedAgents(set('claude', 'foo', 'dsh'), set(), noDir)
+  assert.ok(result.agents.includes('claude'))
+  assert.ok(result.agents.includes('dsh'), 'an agent of the catalogue counts even outside the history list')
+  assert.ok(!result.agents.includes('foo'))
+  assert.equal(result.source, 'history')
+})
+
+test('claude agent teams never comes from a config dir', () => {
+  const result = installedAgents(null, set('claude-code'), () => true)
+  assert.ok(!result.agents.includes('claude-agent-teams'))
+  assert.ok(result.agents.includes('claude'))
+})
+
+test('a history of unknown agents only counts as empty', () => {
+  const result = installedAgents(set('foo'), set('claude-code'), noDir)
+  assert.deepEqual(result, { agents: ['claude'], source: 'dirs' })
+})
+
+test('the result follows the order of the Orca catalogue', () => {
+  const result = installedAgents(null, set('kiro-cli', 'codex', 'claude-code'), (dir) => dir === '.dsh')
   const catalogIds = AGENTS.map((agent) => agent.id)
-  const indexes = agents.map((id) => catalogIds.indexOf(id))
-  assert.ok(indexes.every((index) => index >= 0), 'every result is a catalog agent')
-  assert.ok(indexes.every((index, i) => i === 0 || index > indexes[i - 1]!), 'result follows catalog order')
-  for (const id of ['claude', 'codex', 'antigravity', 'dsh', 'gemini']) assert.ok(agents.includes(id), `${id} is installed`)
-  assert.ok(!agents.includes('claude-agent-teams'), 'an agent missing a required command is dropped')
-  for (const id of agents) {
-    const spec = AGENTS.find((agent) => agent.id === id)!
-    assert.ok(spec.commands.some((command) => ROMAIN_FOUND.has(command)), `${id} has an installed command`)
-  }
+  const indexes = result.agents.map((id) => catalogIds.indexOf(id))
+  assert.ok(indexes.every((index) => index >= 0))
+  assert.ok(indexes.every((index, i) => i === 0 || index > indexes[i - 1]!))
+  assert.deepEqual(result.agents, ['claude', 'codex', 'dsh', 'kiro'])
 })
 
-test('requires the commands an agent depends on', () => {
-  assert.deepEqual(installedAgents(new Set(['dsh-tui'])), [])
+function depsOf(over: Partial<InventoryDeps> = {}): InventoryDeps {
+  return { libAgents: async () => new Set(), exists: noDir, now: () => 42, ...over }
+}
+
+test('detectAgents stamps the inventory and looks for config dirs under the home', async () => {
+  const seen: string[] = []
+  const deps = depsOf({
+    exists: (path) => {
+      seen.push(path)
+      return path === join('/home/me', '.dsh')
+    }
+  })
+  const inventory = await detectAgents(deps, '/home/me', async () => null, () => {})
+  assert.deepEqual(inventory, { agents: ['dsh'], source: 'dirs', detectedAt: 42 })
+  assert.ok(seen.includes(join('/home/me', '.omp')), 'dirs are resolved against the home')
 })
 
-test('probes every command and dependency of the catalog', () => {
-  const tokens = new Set(probeTokens())
-  for (const agent of AGENTS) {
-    for (const command of [...agent.commands, ...agent.requiredCommands]) assert.ok(tokens.has(command), `${command} is probed`)
-  }
+test('a failing library keeps what the history found', async () => {
+  const lines: string[] = []
+  const deps = depsOf({
+    libAgents: async () => {
+      throw new Error('boom')
+    }
+  })
+  const inventory = await detectAgents(deps, '/home/me', async () => set('claude', 'codex'), (line) => lines.push(line))
+  assert.deepEqual(inventory.agents, ['claude', 'codex'])
+  assert.equal(inventory.source, 'history')
+  assert.ok(lines.includes('config dirs: library detection failed'))
 })
 
-test('the inventory is the installed agents, stamped with the detection time', async () => {
-  const inventory = await listInstalledAgents({ findCommands: async () => new Set(['claude', 'gemini']), now: () => 42 })
-  assert.deepEqual(inventory, { agents: ['claude', 'gemini'], detectedAt: 42 })
-})
-
-test('reads the shell probe between its markers only', () => {
-  const stdout = "(eval):1: can't change option: zle\n__AGENT_PROFILES__\nclaude=/u/.local/bin/claude\nagy=/u/.local/bin/agy\n__AGENT_PROFILES__\nbye\n"
-  assert.deepEqual(parseShellProbe(stdout), new Set(['claude', 'agy']))
-  assert.equal(parseShellProbe('no markers here'), null)
-})
-
-test('falls back to the PATH when the login shell fails', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'agent-profiles-path-'))
-  try {
-    writeFileSync(join(dir, 'fakeagent'), '#!/bin/sh\n', { mode: 0o755 })
-    const found = await findCommands(['fakeagent', 'absent-agent', join(dir, 'fakeagent')], async () => ({ ok: false, stdout: '' }), dir)
-    assert.deepEqual(found, new Set(['fakeagent', join(dir, 'fakeagent')]))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('tells the caller when the login shell failed and the PATH answered instead', async () => {
-  let fallbacks = 0
-  await findCommands(['fakeagent'], async () => ({ ok: false, stdout: '' }), '', () => fallbacks++)
-  assert.equal(fallbacks, 1)
-  // Une sortie sans marqueurs vaut un échec du shell.
-  await findCommands(['fakeagent'], async () => ({ ok: true, stdout: 'noise' }), '', () => fallbacks++)
-  assert.equal(fallbacks, 2)
-})
-
-test('does not call the fallback hook when the login shell answered', async () => {
-  let fallbacks = 0
-  const stdout = '__AGENT_PROFILES__\nclaude=/u/bin/claude\n__AGENT_PROFILES__\n'
-  const found = await findCommands(['claude'], async () => ({ ok: true, stdout }), '', () => fallbacks++)
-  assert.deepEqual(found, new Set(['claude']))
-  assert.equal(fallbacks, 0)
+test('a failing library with no history leaves only the dirs the plugin knows', async () => {
+  const lines: string[] = []
+  const deps = depsOf({
+    libAgents: async () => {
+      throw new Error('boom')
+    },
+    exists: (path) => path === join('/home/me', '.jcode')
+  })
+  const inventory = await detectAgents(deps, '/home/me', async () => null, (line) => lines.push(line))
+  assert.deepEqual(inventory.agents, ['jcode'])
+  assert.equal(inventory.source, 'dirs')
+  assert.ok(lines.includes('config dirs: library detection failed'))
 })

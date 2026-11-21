@@ -10,6 +10,26 @@ import type { LockEntry } from './visibility'
 /** Les agents de Romain (valeurs vérifiées à la main, voir skill-dirs.test.ts). */
 export const ROMAIN_AGENTS = ['claude', 'codex', 'grok', 'opencode', 'pi', 'antigravity', 'dsh']
 
+/**
+ * Session complète et valide pour la validation du `mockHost` (réponse de `agent.listSessions`). Le titre porte un
+ * marqueur que les tests cherchent dans les journaux : aucun titre ne doit jamais y figurer.
+ */
+export function sessionOf(agent: string, index = 0) {
+  return {
+    sessionId: `session-${agent}-${index}`,
+    agent,
+    title: `SECRET-TITLE-${index}`,
+    workspaceId: null,
+    hostId: 'local',
+    branch: null,
+    createdAt: 1_700_000_000_000 + index,
+    updatedAt: 1_700_000_000_000 + index,
+    messageCount: 3,
+    totalTokens: 100,
+    running: false
+  }
+}
+
 const created: string[] = []
 process.on('exit', () => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
