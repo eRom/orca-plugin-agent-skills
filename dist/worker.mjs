@@ -21233,57 +21233,6 @@ function byLabel(ids) {
   return [...ids].sort((a2, b4) => labelOf(a2).localeCompare(labelOf(b4), "en", { sensitivity: "base" }));
 }
 
-// src/exclusions.ts
-var EXCLUSIONS_KEY = "exclusions.v1";
-function isRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function compact(entries) {
-  return Object.fromEntries([...entries].filter((entry) => entry[1] !== null));
-}
-function parseExclusions(raw) {
-  if (!isRecord2(raw))
-    return {};
-  const projects = [];
-  for (const [projectKey, skills] of Object.entries(raw)) {
-    if (!isRecord2(skills))
-      return {};
-    const folders = [];
-    for (const [folder, agents2] of Object.entries(skills)) {
-      if (!Array.isArray(agents2) || !agents2.every((agent2) => typeof agent2 === "string"))
-        return {};
-      const unique = [...new Set(agents2)];
-      folders.push([folder, unique.length > 0 ? unique : null]);
-    }
-    const kept = compact(folders);
-    projects.push([projectKey, Object.keys(kept).length > 0 ? kept : null]);
-  }
-  return compact(projects);
-}
-function excludedOf(ex, projectKey, folder) {
-  if (!Object.hasOwn(ex, projectKey))
-    return [];
-  const skills = ex[projectKey];
-  return Object.hasOwn(skills, folder) ? skills[folder] : [];
-}
-function withAgents(ex, projectKey, folder, agents2) {
-  const skills = Object.hasOwn(ex, projectKey) ? ex[projectKey] : {};
-  const nextSkills = compact([
-    ...Object.entries(skills).filter(([name]) => name !== folder),
-    [folder, agents2.length > 0 ? agents2 : null]
-  ]);
-  const others = Object.entries(ex).filter(([key]) => key !== projectKey);
-  return compact([...others, [projectKey, Object.keys(nextSkills).length > 0 ? nextSkills : null]]);
-}
-function exclude(ex, projectKey, folder, agents2) {
-  return withAgents(ex, projectKey, folder, [...new Set([...excludedOf(ex, projectKey, folder), ...agents2])]);
-}
-function include(ex, projectKey, folder, agents2) {
-  const current = excludedOf(ex, projectKey, folder);
-  const left = agents2 ? current.filter((agent2) => !agents2.includes(agent2)) : [];
-  return withAgents(ex, projectKey, folder, left);
-}
-
 // src/hidden-agents.ts
 var HIDDEN_AGENTS_KEY = "hiddenAgents";
 function parseHiddenAgents(raw) {
@@ -21684,67 +21633,9 @@ async function scanWorkspace(root) {
   return { skills: [...byFolder.values()].sort((a2, b4) => a2.folder < b4.folder ? -1 : a2.folder > b4.folder ? 1 : 0), unsafeDirs };
 }
 
-// src/visibility.ts
-import * as nodePath2 from "node:path";
-function sourceLabel(entry, home2, pathApi = nodePath2) {
-  if (!entry)
-    return { kind: "handwritten" };
-  if (pathApi.isAbsolute(entry.source))
-    return { kind: "local", path: abbreviateHome(entry.source, home2, pathApi) };
-  return { kind: "remote", source: entry.source };
-}
-var dirOrder = (copy) => MANAGED_DIRS.indexOf(copy.dir);
-function contentOf(copy, copies) {
-  if (copy.kind !== "internal-link")
-    return copy.hash;
-  const target = copies.find((other) => other.kind === "dir" && other.realPath === copy.realPath);
-  return target ? target.hash : copy.hash;
-}
-function versionsOf(copies) {
-  const byHash = new Map;
-  for (const copy of copies) {
-    const hash = contentOf(copy, copies);
-    const dirs = byHash.get(hash);
-    if (dirs)
-      dirs.push(copy.dir);
-    else
-      byHash.set(hash, [copy.dir]);
-  }
-  return [...byHash].map(([hash, dirs]) => ({ hash, dirs }));
-}
-function buildRow(disk, source, active, excludedAgents) {
-  const copies = [...disk.copies].sort((a2, b4) => dirOrder(a2) - dirOrder(b4));
-  const heldDirs = new Set(copies.map((copy) => copy.dir));
-  const agents2 = active.map((agent2) => {
-    const via = MANAGED_DIRS.filter((dir) => heldDirs.has(dir) && readers(dir, [agent2]).length > 0);
-    const state = via.length > 0 ? "sees" : excludedAgents.has(agent2) ? "excluded" : "absent";
-    return { agent: agent2, state, via };
-  });
-  return {
-    folder: disk.folder,
-    displayName: disk.displayName,
-    description: disk.description,
-    source,
-    agents: agents2,
-    missingFor: agents2.filter((a2) => a2.state === "absent").map((a2) => a2.agent),
-    excluded: agents2.filter((a2) => a2.state === "excluded").map((a2) => a2.agent),
-    versions: versionsOf(copies),
-    copies: copies.map((copy) => ({
-      dir: copy.dir,
-      kind: copy.kind,
-      feeds: readers(copy.dir, active),
-      linkedFrom: copy.kind === "dir" ? copies.filter((o2) => o2.kind === "internal-link" && o2.realPath === copy.realPath && o2.dir !== copy.dir).map((o2) => o2.dir) : []
-    }))
-  };
-}
-function buildRows(scan, lock, active, exclusionsFor, home2, pathApi = nodePath2) {
-  const capable = skillCapable(active);
-  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home2, pathApi), capable, new Set(exclusionsFor(disk.folder))));
-}
-
 // src/operations.ts
 var fail = (error) => ({ ok: false, error });
-var done = (warnings, lostAgents = []) => ({ ok: true, warnings, lostAgents });
+var done = (warnings) => ({ ok: true, warnings });
 function libError(error, trashed = false) {
   return { code: "lib", diagnostics: [toLibDiagnostic(error)], ...trashed ? { trashed: true } : {} };
 }
@@ -21777,10 +21668,6 @@ async function readDisk(root) {
   return { scan, unsafe };
 }
 var skillOf = (scan, folder) => scan.skills.find((skill) => skill.folder === folder);
-function agentsSeeing(scan, ctx, folder) {
-  const row = buildRows(scan, new Map, ctx.active, () => [], ctx.home).find((candidate) => candidate.folder === folder);
-  return row ? row.agents.filter((agent2) => agent2.state === "sees").map((agent2) => agent2.agent) : [];
-}
 async function moveToTrash(trash, paths) {
   if (paths.length === 0)
     return null;
@@ -21992,33 +21879,56 @@ async function removeSkill(ctx, folder) {
   }
   return done(warnings);
 }
-async function removeFromDir(ctx, folder, dir) {
-  if (!ctx.trash)
-    return fail({ code: ctx.noTrashCode });
-  const disk = await readDisk(ctx.root);
-  if (!disk)
-    return fail({ code: "no-workspace" });
-  if (disk.unsafe.includes(dir))
-    return fail({ code: "unsafe-dir", dirs: [dir] });
-  const skill = skillOf(disk.scan, folder);
-  const copy = skill?.copies.find((candidate) => candidate.dir === dir);
-  if (!skill || !copy)
-    return fail({ code: "gone" });
-  if (copy.kind === "dir") {
-    const linkedFrom = skill.copies.filter((other) => other.kind === "internal-link" && other.realPath === copy.realPath && other.dir !== dir).map((other) => other.dir);
-    if (linkedFrom.length > 0)
-      return fail({ code: "linked-target", dirs: linkedFrom });
+
+// src/visibility.ts
+import * as nodePath2 from "node:path";
+function sourceLabel(entry, home2, pathApi = nodePath2) {
+  if (!entry)
+    return { kind: "handwritten" };
+  if (pathApi.isAbsolute(entry.source))
+    return { kind: "local", path: abbreviateHome(entry.source, home2, pathApi) };
+  return { kind: "remote", source: entry.source };
+}
+var dirOrder = (copy) => MANAGED_DIRS.indexOf(copy.dir);
+function contentOf(copy, copies) {
+  if (copy.kind !== "internal-link")
+    return copy.hash;
+  const target = copies.find((other) => other.kind === "dir" && other.realPath === copy.realPath);
+  return target ? target.hash : copy.hash;
+}
+function versionsOf(copies) {
+  const byHash = new Map;
+  for (const copy of copies) {
+    const hash = contentOf(copy, copies);
+    const dirs = byHash.get(hash);
+    if (dirs)
+      dirs.push(copy.dir);
+    else
+      byHash.set(hash, [copy.dir]);
   }
-  const before = agentsSeeing(disk.scan, ctx, folder);
-  if (skill.copies.length === 1) {
-    const removed = await removeSkill(ctx, folder);
-    return removed.ok ? { ...removed, lostAgents: before, removedAll: true } : removed;
-  }
-  const trashError = await moveToTrash(ctx.trash, [copy.path]);
-  if (trashError)
-    return fail(trashError);
-  const after = agentsSeeing(await scanWorkspace(ctx.root), ctx, folder);
-  return done([], before.filter((agent2) => !after.includes(agent2)));
+  return [...byHash].map(([hash, dirs]) => ({ hash, dirs }));
+}
+function buildRow(disk, source, active) {
+  const copies = [...disk.copies].sort((a2, b4) => dirOrder(a2) - dirOrder(b4));
+  const heldDirs = new Set(copies.map((copy) => copy.dir));
+  const agents2 = active.map((agent2) => {
+    const via = MANAGED_DIRS.filter((dir) => heldDirs.has(dir) && readers(dir, [agent2]).length > 0);
+    return { agent: agent2, state: via.length > 0 ? "sees" : "absent", via };
+  });
+  return {
+    folder: disk.folder,
+    displayName: disk.displayName,
+    description: disk.description,
+    source,
+    agents: agents2,
+    missingFor: agents2.filter((a2) => a2.state === "absent").map((a2) => a2.agent),
+    versions: versionsOf(copies),
+    copies: copies.map((copy) => ({ dir: copy.dir, feeds: readers(copy.dir, active) }))
+  };
+}
+function buildRows(scan, lock, active, home2, pathApi = nodePath2) {
+  const capable = skillCapable(active);
+  return scan.skills.map((disk) => buildRow(disk, sourceLabel(lock.get(disk.folder), home2, pathApi), capable));
 }
 
 // src/workspace.ts
@@ -22062,7 +21972,6 @@ async function resolveWorkspace(call, home2, platform2, log2 = () => {}, realpat
     return { view: { status: "home" } };
   return {
     root: row.path,
-    projectKey: row.projectId ?? row.id,
     view: {
       status: "ready",
       id: row.id,
@@ -22190,8 +22099,6 @@ async function activateWith(orca, deps) {
     });
     return run;
   }
-  const readExclusions = async () => parseExclusions(await orca.storage.get(EXCLUSIONS_KEY));
-  const writeExclusions = (next) => orca.storage.set(EXCLUSIONS_KEY, next);
   async function readHidden() {
     try {
       return parseHiddenAgents(await orca.storage.get(HIDDEN_AGENTS_KEY));
@@ -22199,14 +22106,6 @@ async function activateWith(orca, deps) {
       orca.log(`hidden agents unreadable: ${messageOf(error)}`);
       return [];
     }
-  }
-  function updateExclusions(change) {
-    return serialize(async () => {
-      const current2 = await readExclusions();
-      const next = change(current2);
-      if (next !== current2)
-        await writeExclusions(next);
-    });
   }
   async function readLock(root) {
     try {
@@ -22233,11 +22132,10 @@ async function activateWith(orca, deps) {
     };
     if (!("root" in focused))
       return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current };
-    const { root, projectKey } = focused;
+    const { root } = focused;
     const scan = await scanWorkspace(root);
     const { lock, unreadable } = await readLock(root);
-    const stored = await readExclusions();
-    const rows = buildRows(scan, lock, agents2.active, (folder) => excludedOf(stored, projectKey, folder), deps.home);
+    const rows = buildRows(scan, lock, agents2.active, deps.home);
     return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current };
   }
   async function postState() {
@@ -22409,21 +22307,6 @@ ${hit.source}`) })) };
     for (const warning of warnings)
       orca.log(`op=${op.kind} folder=${folderOf(op)} warning=${warning.code}`);
   }
-  function exclusionChange(op, result, projectKey) {
-    switch (op.kind) {
-      case "remove-dir":
-        return result.removedAll ? (ex) => include(ex, projectKey, op.folder) : (ex) => exclude(ex, projectKey, op.folder, result.lostAgents);
-      case "propagate":
-        return (ex) => include(ex, projectKey, op.folder, op.agents);
-      case "reinstate":
-        return (ex) => include(ex, projectKey, op.folder, [op.agent]);
-      case "remove":
-        return (ex) => include(ex, projectKey, op.folder);
-      case "add":
-      case "keep":
-        return null;
-    }
-  }
   async function prepareAdd(op, ctx, held) {
     await mkdir4(ctx.tmpdir, { recursive: true });
     let trial;
@@ -22474,13 +22357,9 @@ ${hit.source}`) })) };
         return keepVersion(ctx, op.folder, op.hash);
       case "remove":
         return removeSkill(ctx, op.folder);
-      case "remove-dir":
-        return removeFromDir(ctx, op.folder, op.dir);
-      case "reinstate":
-        return propagate(ctx, op.folder, [op.agent]);
     }
   }
-  async function execute(opId, op, ctx, held, projectKey) {
+  async function execute(opId, op, ctx, held) {
     let result;
     try {
       result = await runOp(op, ctx, held);
@@ -22489,21 +22368,12 @@ ${hit.source}`) })) };
     }
     if (op.kind === "add" && held && preview === held)
       releasePreview();
-    const extra = [];
-    try {
-      const change = result.ok ? exclusionChange(op, result, projectKey) : null;
-      if (change)
-        await updateExclusions(change);
-    } catch (error) {
-      orca.log(`op=${op.kind} folder=${folderOf(op)} warning=PLUGIN_EXCLUSIONS_FAILED`);
-      extra.push({ code: "PLUGIN_EXCLUSIONS_FAILED", message: messageOf(error) });
-    }
     if (result.ok)
       logWarnings(op, result.warnings);
     else
       logError(op, result.error);
     current = null;
-    const finished = result.ok ? { opId, op, ok: true, warnings: [...result.warnings, ...extra] } : { opId, op, ok: false, error: result.error, warnings: [] };
+    const finished = result.ok ? { opId, op, ok: true, warnings: result.warnings } : { opId, op, ok: false, error: result.error, warnings: [] };
     orca.panels.post("op.finished", finished);
     await postStateSafely();
   }
@@ -22521,13 +22391,11 @@ ${hit.source}`) })) };
     const network = onNetwork(focused.view);
     let ctx = {
       root: focused.root,
-      home: deps.home,
       lib: deps.lib,
       trash: network ? null : deps.trash,
       noTrashCode: network ? "network-path" : deps.trashStatus === "unverified" ? "trash-unverified" : "no-trash",
       tmpdir: deps.tmpdir,
-      writeDirs: agents2.writeDirs,
-      active: agents2.active
+      writeDirs: agents2.writeDirs
     };
     let held = null;
     if (op.kind === "add") {
@@ -22554,7 +22422,7 @@ ${hit.source}`) })) };
       ctx = prepared.ctx;
     }
     const opId = randomUUID();
-    execute(opId, op, ctx, held, focused.projectKey).catch((error) => {
+    execute(opId, op, ctx, held).catch((error) => {
       current = null;
       orca.log(`op=${op.kind} folder=${folderOf(op)} failed: ${messageOf(error)}`);
     });

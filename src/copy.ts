@@ -38,9 +38,7 @@ export type Messages = {
   emptyTitle: string
   emptyHint: string
   handwritten: string
-  externalLink: string
   absentFor: (agents: string) => string
-  excludedFor: (agents: string) => string
   propagate: string
   removeSkillLabel: (name: string) => string
   expandLabel: (name: string) => string
@@ -53,10 +51,6 @@ export type Messages = {
   // Ligne dépliée.
   readBy: (agents: string) => string
   readByNobody: string
-  removeFromDir: string
-  addFor: (agent: string) => string
-  reinstate: (agent: string) => string
-  pointsHere: (dirs: string) => string
   differs: string
   versionLabel: (n: number) => string
   keepThis: string
@@ -69,9 +63,6 @@ export type Messages = {
   replaceConfirm: string
   removeAsk: (name: string) => string
   removeConfirm: string
-  removeDirAsk: (name: string, dir: string) => string
-  losesSight: (agents: string) => string
-  keepsSight: (agents: string) => string
 
   // Recherche et ajout.
   searching: string
@@ -106,7 +97,6 @@ export type Messages = {
     trashUnverified: (os: string) => string
     networkPath: string
     unsafeDir: (dirs: string) => string
-    linkedTarget: (dirs: string) => string
     gone: string
     previewExpired: string
     workspaceChanged: string
@@ -136,7 +126,6 @@ export type Messages = {
     SKILLS_BROKEN_SYMLINK: string
     SKILLS_SYMLINK_CYCLE: string
     SKILLS_SYMLINK_OUTSIDE_SKILL: string
-    PLUGIN_EXCLUSIONS_FAILED: string
     PLUGIN_LOCK_KEPT: string
     PLUGIN_UNSAFE_DIR: string
     PLUGIN_NOT_TRACKED: string
@@ -173,9 +162,7 @@ const en: Messages = {
   emptyTitle: 'No skill in this project.',
   emptyHint: 'Search skills.sh or paste the path of a folder.',
   handwritten: 'handwritten',
-  externalLink: 'external link',
   absentFor: (agents) => `Missing for ${agents}`,
-  excludedFor: (agents) => `Excluded for ${agents}`,
   propagate: 'Propagate',
   removeSkillLabel: (name) => `Remove ${name}`,
   expandLabel: (name) => `Show details of ${name}`,
@@ -187,10 +174,6 @@ const en: Messages = {
 
   readBy: (agents) => `Read by ${agents}`,
   readByNobody: 'Read by no active agent',
-  removeFromDir: 'Remove from here',
-  addFor: (agent) => `Add for ${agent}`,
-  reinstate: (agent) => `Reinstate ${agent}`,
-  pointsHere: (dirs) => `${dirs} points here: remove it first`,
   differs: 'Different from one folder to another',
   versionLabel: (n) => `Version ${n}`,
   keepThis: 'Keep this one',
@@ -202,9 +185,6 @@ const en: Messages = {
   replaceConfirm: 'Replace',
   removeAsk: (name) => `Remove ${name} from the project? It disappears for every agent. A copy goes to the Trash.`,
   removeConfirm: 'Remove',
-  removeDirAsk: (name, dir) => `Remove ${name} from ${dir}? A copy goes to the Trash.`,
-  losesSight: (agents) => `${agents} will no longer see it.`,
-  keepsSight: (agents) => `${agents} still see it through another folder.`,
 
   searching: 'Searching...',
   reading: 'Reading the folder...',
@@ -236,7 +216,6 @@ const en: Messages = {
     trashUnverified: (os) => `The Trash is not verified on ${os} yet: nothing was replaced or removed.`,
     networkPath: 'No Trash on a network path: nothing was replaced or removed.',
     unsafeDir: (dirs) => `${dirs} points outside the project: nothing was written there.`,
-    linkedTarget: (dirs) => `${dirs} points here: remove it first`,
     gone: 'This skill no longer exists on disk.',
     previewExpired: 'The preview of the source expired: start again.',
     workspaceChanged: 'The focused workspace changed: nothing was done. Try again here.',
@@ -265,7 +244,6 @@ const en: Messages = {
     SKILLS_BROKEN_SYMLINK: 'A link in this skill is broken: skipped.',
     SKILLS_SYMLINK_CYCLE: 'A link in this skill loops: skipped.',
     SKILLS_SYMLINK_OUTSIDE_SKILL: 'A link in this skill points outside it: skipped.',
-    PLUGIN_EXCLUSIONS_FAILED: 'Done, but the exclusions could not be saved.',
     PLUGIN_LOCK_KEPT: 'The lock entry was kept: a copy remains for an agent that was not targeted.',
     PLUGIN_UNSAFE_DIR: 'A skills folder points outside the project: left untouched.',
     PLUGIN_NOT_TRACKED: 'Copied without a lock entry: no target folder is known to the skills library.',
@@ -302,9 +280,7 @@ const fr: Messages = {
   emptyTitle: 'Aucune skill dans ce projet.',
   emptyHint: "Cherchez sur skills.sh ou collez le chemin d'un dossier.",
   handwritten: 'écrite à la main',
-  externalLink: 'lien externe',
   absentFor: (agents) => `Absente pour ${agents}`,
-  excludedFor: (agents) => `Exclue pour ${agents}`,
   propagate: 'Propager',
   removeSkillLabel: (name) => `Retirer ${name}`,
   expandLabel: (name) => `Afficher le détail de ${name}`,
@@ -316,10 +292,6 @@ const fr: Messages = {
 
   readBy: (agents) => `Lue par ${agents}`,
   readByNobody: 'Lue par aucun agent actif',
-  removeFromDir: "Retirer d'ici",
-  addFor: (agent) => `Ajouter pour ${agent}`,
-  reinstate: (agent) => `Réintégrer ${agent}`,
-  pointsHere: (dirs) => `${dirs} pointe ici : retirez-le d'abord`,
   differs: 'Différente selon les dossiers',
   versionLabel: (n) => `Version ${n}`,
   keepThis: 'Garder celle-ci',
@@ -331,9 +303,6 @@ const fr: Messages = {
   replaceConfirm: 'Remplacer',
   removeAsk: (name) => `Retirer ${name} du projet ? Elle disparaît pour tous les agents. Une copie part à la Corbeille.`,
   removeConfirm: 'Retirer',
-  removeDirAsk: (name, dir) => `Retirer ${name} de ${dir} ? Une copie part à la Corbeille.`,
-  losesSight: (agents) => `${agents} ne la verront plus.`,
-  keepsSight: (agents) => `${agents} la voient encore par un autre dossier.`,
 
   searching: 'Recherche…',
   reading: 'Lecture du dossier…',
@@ -365,7 +334,6 @@ const fr: Messages = {
     trashUnverified: (os) => `Corbeille pas encore vérifiée sous ${os} : rien n'a été remplacé ni retiré.`,
     networkPath: "Pas de Corbeille sur un chemin réseau : rien n'a été remplacé ni retiré.",
     unsafeDir: (dirs) => `${dirs} pointe hors du projet : rien n'y a été écrit.`,
-    linkedTarget: (dirs) => `${dirs} pointe ici : retirez-le d'abord`,
     gone: "Cette skill n'existe plus sur le disque.",
     previewExpired: "L'aperçu de la source a expiré : recommencez.",
     workspaceChanged: "L'espace actif a changé : rien n'a été fait. Recommencez ici.",
@@ -394,7 +362,6 @@ const fr: Messages = {
     SKILLS_BROKEN_SYMLINK: 'Un lien de cette skill est cassé : ignoré.',
     SKILLS_SYMLINK_CYCLE: 'Un lien de cette skill boucle : ignoré.',
     SKILLS_SYMLINK_OUTSIDE_SKILL: 'Un lien de cette skill sort de la skill : ignoré.',
-    PLUGIN_EXCLUSIONS_FAILED: "Fait, mais les exclusions n'ont pas pu être enregistrées.",
     PLUGIN_LOCK_KEPT: "L'entrée du lock est gardée : une copie subsiste chez un agent non visé.",
     PLUGIN_UNSAFE_DIR: 'Un dossier de skills pointe hors du projet : laissé intact.',
     PLUGIN_NOT_TRACKED: "Copiée sans entrée au lock : aucun dossier cible n'est connu de la bibliothèque.",
@@ -422,7 +389,6 @@ const OP_ERROR_CODES: ReadonlySet<string> = new Set<OpError['code']>([
   'trash-unverified',
   'network-path',
   'unsafe-dir',
-  'linked-target',
   'gone',
   'preview-expired',
   'path-not-found',
@@ -476,8 +442,6 @@ export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages, 
         return [m.errors.networkPath]
       case 'unsafe-dir':
         return [m.errors.unsafeDir((error.dirs ?? []).join(', '))]
-      case 'linked-target':
-        return [m.errors.linkedTarget((error.dirs ?? []).join(', '))]
       case 'gone':
         return [m.errors.gone]
       case 'preview-expired':

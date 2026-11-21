@@ -1,7 +1,6 @@
 // `orca plugin check` dessine le panneau une fois par scénario, en sombre puis en clair ; le worker est remplacé par un état figé.
 import { defineCheck } from 'orca/testing'
 import type { AgentView, PanelState } from './protocol'
-import type { CopyKind } from './scan'
 import type { ManagedDir } from './skill-dirs'
 import type { SkillRow } from './visibility'
 
@@ -29,11 +28,11 @@ const READERS: Record<ManagedDir, string[]> = {
   '.prime/agent/skills': []
 }
 
-function row(folder: string, description: string, source: SkillRow['source'], copies: [ManagedDir, string][], excluded: string[] = []): SkillRow {
+function row(folder: string, description: string, source: SkillRow['source'], copies: [ManagedDir, string][]): SkillRow {
   const seeing = new Set(copies.flatMap(([dir]) => READERS[dir]))
   const agents = AGENTS.map((agent) => ({
     agent: agent.id,
-    state: seeing.has(agent.id) ? ('sees' as const) : excluded.includes(agent.id) ? ('excluded' as const) : ('absent' as const),
+    state: seeing.has(agent.id) ? ('sees' as const) : ('absent' as const),
     via: copies.map(([dir]) => dir).filter((dir) => READERS[dir].includes(agent.id))
   }))
   const hashes = [...new Set(copies.map(([, hash]) => hash))]
@@ -44,9 +43,8 @@ function row(folder: string, description: string, source: SkillRow['source'], co
     source,
     agents,
     missingFor: agents.filter((a) => a.state === 'absent').map((a) => a.agent),
-    excluded: agents.filter((a) => a.state === 'excluded').map((a) => a.agent),
     versions: hashes.map((hash) => ({ hash, dirs: copies.filter(([, each]) => each === hash).map(([dir]) => dir) })),
-    copies: copies.map(([dir]) => ({ dir, kind: 'dir' as CopyKind, feeds: READERS[dir], linkedFrom: [] }))
+    copies: copies.map(([dir]) => ({ dir, feeds: READERS[dir] }))
   }
 }
 
@@ -56,7 +54,7 @@ const READY_ROWS: SkillRow[] = [
     ['.claude/skills', 'a'],
     ['.grok/skills', 'a']
   ]),
-  row('motion-context', 'Contexte des projets de motion design', { kind: 'handwritten' }, [['.claude/skills', 'b']], ['grok']),
+  row('motion-context', 'Contexte des projets de motion design', { kind: 'handwritten' }, [['.claude/skills', 'b']]),
   // Deux contenus distincts : le bandeau de divergence.
   row('frontend-design', 'Interfaces soignées', { kind: 'remote', source: 'anthropics/skills' }, [
     ['.claude/skills', 'c1'],
@@ -82,7 +80,7 @@ function stateOf(overrides: Partial<PanelState>): PanelState {
 
 const SCENARIOS: Record<string, PanelState> = {
   ready: stateOf({}),
-  fallback: stateOf({ inventory: 'fallback', agents: [], rows: READY_ROWS.map((r) => ({ ...r, agents: [], missingFor: [], excluded: [] })) }),
+  fallback: stateOf({ inventory: 'fallback', agents: [], rows: READY_ROWS.map((r) => ({ ...r, agents: [], missingFor: [] })) }),
   remote: stateOf({ workspace: { status: 'remote' }, rows: [] }),
   noWorkspace: stateOf({ workspace: { status: 'none' }, rows: [] }),
   // Windows : racine POSIX d'une distribution WSL, aucun geste.

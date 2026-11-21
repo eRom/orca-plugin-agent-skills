@@ -4,7 +4,6 @@ import { atom, plugin, set, update, type PanelContext } from 'orca'
 import type { OpError } from './operations'
 import { isPathInput } from './path-input'
 import type { OpFinished, OpRequest, PanelState, PreviewAnswer, PreviewRequest, SearchAnswer, StartAnswer } from './protocol'
-import type { ManagedDir } from './skill-dirs'
 import type { LibDiagnostic } from './skills-lib'
 import type { SourceLabel } from './visibility'
 
@@ -35,7 +34,6 @@ export type PathCheck = { status: 'checking' } | { status: 'found'; text: string
 export type Confirm =
   | { kind: 'replace'; previewId: string; names: string[]; folders: string[] }
   | { kind: 'remove'; folder: string }
-  | { kind: 'remove-dir'; folder: string; dir: ManagedDir }
 
 /** Ce qu'un geste laisse sous sa ligne : une erreur (ou un message brut de l'hôte) et des avertissements. */
 export type Note = { error: OpError | null; message: string | null; warnings: LibDiagnostic[] }

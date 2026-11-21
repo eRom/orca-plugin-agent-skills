@@ -31,21 +31,19 @@ const row = (path: string, over: Partial<Row> = {}): Row => ({
 /** `resolveWorkspace` sous macOS : le cas des tests historiques. */
 const onDarwin = (call: HostCall, home: string, log?: (line: string) => void) => resolveWorkspace(call, home, 'darwin', log)
 
-test('a local worktree is ready, with the project key and the branch', async () => {
+test('a local worktree is ready, with the branch', async () => {
   const root = tempDir('ws-ready')
   const result = await onDarwin(hostOf(context('identity:x'), [row(root)]), tempDir('ws-home'))
   assert.deepEqual(result, {
     root,
-    projectKey: 'p1',
     view: { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false, network: false }
   })
 })
 
-test('the project key falls back to the workspace id, the branch to the context one', async () => {
+test('the branch falls back to the context one', async () => {
   const root = tempDir('ws-fallback')
   const result = await onDarwin(hostOf(context('identity:x'), [row(root, { projectId: null, branch: null, hostId: null })]), tempDir('ws-home'))
   assert.ok('root' in result)
-  assert.equal(result.projectKey, 'identity:x')
   assert.deepEqual(result.view, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'main', linkedWorktree: false, network: false })
 })
 
@@ -132,7 +130,6 @@ test('on Windows, a UNC root is ready and flagged as a network workspace', async
   const result = await resolveWorkspace(hostOf(context('identity:x'), [row(unc)]), home, 'win32', undefined, async (path) => path)
   assert.deepEqual(result, {
     root: unc,
-    projectKey: 'p1',
     view: { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false, network: true }
   })
 })

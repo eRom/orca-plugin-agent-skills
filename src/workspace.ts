@@ -12,8 +12,7 @@ export type WorkspaceView =
   | { status: 'none' | 'remote' | 'missing' | 'home' | 'wsl' }
   | { status: 'ready'; id: string; name: string; branch: string | null; linkedWorktree: boolean; network: boolean }
 
-/** `projectKey` : identifiant du projet (`projectId`), commun à tous ses worktrees ; l'identifiant de l'espace à défaut. */
-export type FocusedWorkspace = { root: string; projectKey: string; view: WorkspaceView }
+export type FocusedWorkspace = { root: string; view: WorkspaceView }
 
 /**
  * Forme de la racine d'un espace : lecteur (`C:\…`), partage réseau (`\\hôte\…`), racine POSIX (`/…`) ou autre (relatif, illisible).
@@ -68,7 +67,6 @@ export async function resolveWorkspace(
 
   return {
     root: row.path,
-    projectKey: row.projectId ?? row.id,
     view: {
       status: 'ready',
       id: row.id,

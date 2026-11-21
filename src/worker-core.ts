@@ -1,17 +1,16 @@
-// Cœur du worker : seul écrivain du stockage, il répond au panneau, tient la file des gestes et les exclusions par projet.
+// Cœur du worker : seul écrivain du stockage, il répond au panneau et tient la file des gestes.
 // Toutes les dépendances (bibliothèque `skills`, Corbeille, sélecteur, réseau, inventaire) sont injectées : voir `worker.ts`
 // pour les vraies, et les tests pour les factices. Aucune surveillance du disque en V1 : l'état est relu à l'ouverture du
 // panneau, au changement d'espace, après chaque geste et sur demande (spec §5.2).
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { JsonValue, OrcaWorkerApi } from 'orca/worker'
+import type { OrcaWorkerApi } from 'orca/worker'
 import { agentById, byLabel } from './agents'
-import { EXCLUSIONS_KEY, exclude, excludedOf, include, parseExclusions, type Exclusions } from './exclusions'
 import { HIDDEN_AGENTS_KEY, parseHiddenAgents, setHidden } from './hidden-agents'
 import { listHistoryAgents } from './history'
 import { detectAgents, type Inventory, type InventoryDeps } from './inventory'
-import { addSkills, keepVersion, propagate, removeFromDir, removeSkill, type OpContext, type OpError, type OpResult } from './operations'
+import { addSkills, keepVersion, propagate, removeSkill, type OpContext, type OpError, type OpResult } from './operations'
 import { abbreviateHome, isInside, resolveInputPath } from './paths'
 import type { AgentView, OpFinished, OpRequest, PanelState, PreviewAnswer, PreviewRequest, SearchAnswer, StartAnswer } from './protocol'
 import { scanWorkspace } from './scan'
@@ -204,15 +203,13 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
 
   // --- Stockage : une seule file pour toute écriture ---
 
-  /** Les écritures passent une par une (lecture puis écriture des exclusions) : pas d'exclusion perdue. */
+  /** Les écritures passent une par une (lecture puis écriture) : aucune n'en écrase une autre. */
   function serialize<T>(task: () => Promise<T>): Promise<T> {
     const run = writing.then(task)
     writing = run.catch(() => undefined)
     return run
   }
 
-  const readExclusions = async (): Promise<Exclusions> => parseExclusions(await orca.storage.get(EXCLUSIONS_KEY))
-  const writeExclusions = (next: Exclusions): Promise<void> => orca.storage.set(EXCLUSIONS_KEY, next as unknown as JsonValue)
   /** Un stockage illisible ne doit pas casser l'état : aucun agent masqué, et le journal le dit. */
   async function readHidden(): Promise<readonly string[]> {
     try {
@@ -221,14 +218,6 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       orca.log(`hidden agents unreadable: ${messageOf(error)}`)
       return []
     }
-  }
-
-  function updateExclusions(change: (current: Exclusions) => Exclusions): Promise<void> {
-    return serialize(async () => {
-      const current = await readExclusions()
-      const next = change(current)
-      if (next !== current) await writeExclusions(next)
-    })
   }
 
   // --- État du panneau ---
@@ -248,7 +237,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       return spec ? [{ id, label: spec.label, icon: spec.icon, trust: TRUST_GATED[id] ?? null }] : []
     })
 
-  /** L'état est relu sur le disque ; une lecture n'écrit jamais : une exclusion ne tombe que par un geste (spec §5.4). */
+  /** L'état est relu sur le disque ; une lecture n'écrit jamais. */
   async function currentState(force = false, anyAge = false): Promise<PanelState> {
     const focused = await focusedWorkspace()
     const agents = await agentsOf(force, anyAge)
@@ -262,12 +251,10 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     }
     if (!('root' in focused)) return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current }
 
-    const { root, projectKey } = focused
+    const { root } = focused
     const scan = await scanWorkspace(root)
     const { lock, unreadable } = await readLock(root)
-    const stored = await readExclusions()
-    // Le disque prime à l'affichage (un agent qui voit la skill n'est jamais « exclu ») sans que le stockage change.
-    const rows = buildRows(scan, lock, agents.active, (folder) => excludedOf(stored, projectKey, folder), deps.home)
+    const rows = buildRows(scan, lock, agents.active, deps.home)
     return { ...base, rows, unsafeDirs: scan.unsafeDirs, lockUnreadable: unreadable, busy: current }
   }
 
@@ -455,26 +442,6 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     for (const warning of warnings) orca.log(`op=${op.kind} folder=${folderOf(op)} warning=${warning.code}`)
   }
 
-  /** Change des exclusions que le résultat d'un geste réussi impose, ou `null` quand le geste n'y touche pas. */
-  function exclusionChange(op: OpRequest, result: Extract<OpResult, { ok: true }>, projectKey: string): ((ex: Exclusions) => Exclusions) | null {
-    switch (op.kind) {
-      case 'remove-dir':
-        // La dernière copie retirée vaut un retrait complet : plus rien à exclure.
-        return result.removedAll
-          ? (ex) => include(ex, projectKey, op.folder)
-          : (ex) => exclude(ex, projectKey, op.folder, result.lostAgents)
-      case 'propagate':
-        return (ex) => include(ex, projectKey, op.folder, op.agents)
-      case 'reinstate':
-        return (ex) => include(ex, projectKey, op.folder, [op.agent])
-      case 'remove':
-        return (ex) => include(ex, projectKey, op.folder)
-      case 'add':
-      case 'keep':
-        return null
-    }
-  }
-
   /**
    * Essai et contrôle de collision d'un ajout, avant de répondre. L'essai (`stage`) sert de source au geste : la
    * bibliothèque rendue ne le refait pas. Renvoie l'erreur à répondre, ou le contexte du geste.
@@ -528,15 +495,11 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
         return keepVersion(ctx, op.folder, op.hash)
       case 'remove':
         return removeSkill(ctx, op.folder)
-      case 'remove-dir':
-        return removeFromDir(ctx, op.folder, op.dir)
-      case 'reinstate':
-        return propagate(ctx, op.folder, [op.agent])
     }
   }
 
-  /** Le geste, détaché de la requête : son `signal` ne l'arrête jamais. À la fin, exclusions, `op.finished`, puis l'état. */
-  async function execute(opId: string, op: OpRequest, ctx: OpContext, held: Preview | null, projectKey: string): Promise<void> {
+  /** Le geste, détaché de la requête : son `signal` ne l'arrête jamais. À la fin, `op.finished`, puis l'état. */
+  async function execute(opId: string, op: OpRequest, ctx: OpContext, held: Preview | null): Promise<void> {
     let result: OpResult
     try {
       result = await runOp(op, ctx, held)
@@ -545,20 +508,11 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     }
     // Seule la source tenue par ce geste est rendue : un aperçu plus récent n'est pas le sien.
     if (op.kind === 'add' && held && preview === held) releasePreview()
-    // Le geste a réussi mais les exclusions n'ont pas pu être écrites : succès, avec un avertissement que le panneau montre.
-    const extra: LibDiagnostic[] = []
-    try {
-      const change = result.ok ? exclusionChange(op, result, projectKey) : null
-      if (change) await updateExclusions(change)
-    } catch (error) {
-      orca.log(`op=${op.kind} folder=${folderOf(op)} warning=PLUGIN_EXCLUSIONS_FAILED`)
-      extra.push({ code: 'PLUGIN_EXCLUSIONS_FAILED', message: messageOf(error) })
-    }
     if (result.ok) logWarnings(op, result.warnings)
     else logError(op, result.error)
     current = null
     const finished: OpFinished = result.ok
-      ? { opId, op, ok: true, warnings: [...result.warnings, ...extra] }
+      ? { opId, op, ok: true, warnings: result.warnings }
       : { opId, op, ok: false, error: result.error, warnings: [] }
     orca.panels.post('op.finished', finished)
     await postStateSafely()
@@ -577,14 +531,12 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     const network = onNetwork(focused.view)
     let ctx: OpContext = {
       root: focused.root,
-      home: deps.home,
       lib: deps.lib,
       // Sur un chemin réseau, la Corbeille système n'atteint pas le partage : aucun geste destructif, avant tout appel.
       trash: network ? null : deps.trash,
       noTrashCode: network ? 'network-path' : deps.trashStatus === 'unverified' ? 'trash-unverified' : 'no-trash',
       tmpdir: deps.tmpdir,
-      writeDirs: agents.writeDirs,
-      active: agents.active
+      writeDirs: agents.writeDirs
     }
 
     let held: Preview | null = null
@@ -613,7 +565,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     }
 
     const opId = randomUUID()
-    execute(opId, op, ctx, held, focused.projectKey).catch((error: unknown) => {
+    execute(opId, op, ctx, held).catch((error: unknown) => {
       current = null
       orca.log(`op=${op.kind} folder=${folderOf(op)} failed: ${messageOf(error)}`)
     })

@@ -21,11 +21,11 @@ Orca shows the access the plugin asks for (see [What it can access](#what-it-can
 ## Features
 
 - **One field does everything.** Empty, it lists the skills of the project. Type two characters or more and it searches [skills.sh](https://skills.sh), sorted by installs. Paste a path (`/`, `~`, `./` or `../`; on Windows also a drive path such as `C:\...`, and `.\`, `..\` or `~\`) and it offers to add from that folder. The folder button opens the macOS picker; on Linux and Windows there is no folder button, paste the path.
-- **One icon per active agent on each skill**: full when the agent sees the skill, faded when it does not. An agent you removed the skill for on purpose has no icon: the row says "Excluded for X". The icons only display, every gesture is a button in the row.
+- **One icon per active agent on each skill**: full when the agent sees the skill, faded when it does not. Hover an icon to see which folder gives the agent the skill. The icons only display.
 - **Choose your agents**: the plugin detects your agents: those Orca's history has seen, plus those whose config folder exists. The agent button in the panel header lists them, each with a switch: a hidden agent loses its icons and an addition no longer writes for it, in every project (a folder that another active agent reads is still written). The last visible agent cannot be hidden.
-- **Propagate**: when an active agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads. In the expanded row, **Add for X** does it for a single agent.
+- **Propagate**: when an active agent does not see a skill, a warning says which ones, and one click copies the skill into the folder each of them reads.
 - **Add** from a skills.sh result or a local folder (a pasted path, or the folder button). A typed `owner/repo` is a search, not an add: pick the result you want. A source holding several skills opens a checklist, everything ticked by default.
-- **Remove** a skill for every agent, or **remove here** from one folder (an expanded row lists the folders that carry a copy and the agents each one feeds). The confirmation names the agents that lose the skill and those that still see it through another folder. An agent that lost a skill this way is remembered as excluded for that skill (see [Exclusions](#exclusions)).
+- **Remove** a skill with the trash icon of its row: it goes from every folder the plugin manages, after a confirmation, and each copy goes to the Trash. There is no per-folder or per-agent removal: to keep a skill for some agents only, hide the other agents (see **Choose your agents**).
 - **Diverging copies** (the same skill, different content in two folders): the row says so, shows one version per distinct content, and **Keep this one** copies it over the others. Nothing is written before you choose.
 - **Replace safely**: adding a skill whose name already exists asks first, and the current copy goes to the Trash.
 - **Worktrees**: the panel follows the focused workspace. In a non-main worktree it reminds you that a skill added there reaches the other worktrees only once committed.
@@ -47,10 +47,6 @@ An addition writes into the **fewest folders** that cover your active agents, no
 - **No active agent** (none of Orca's agents found on your computer, or every one found is hidden): the plugin writes into `.agents/skills` and `.claude/skills`, which cover 35 of Orca's 45 agents, shows no agent icons, and says which case it is in one line.
 - A `skills-lock.json` is written at the root of the project by additions, as the `skills` CLI does. Propagate and the copies into folders the library does not know (`.openclaude`, `.prime`) leave it alone.
 
-### Exclusions
-
-Removing a skill from one folder marks the agents that fed on it as **excluded** for that skill. They lose their icon, get no warning, and Propagate skips them. The expanded row offers **Reinstate X**, which copies the skill back and lifts the exclusion. The disk wins on display: an excluded agent that sees the skill again (a copy made by hand, or in another worktree) is shown as seeing it, but the exclusion itself stays stored and shows again if that copy goes away. It is lifted only by **Reinstate**, by **Propagate** for that agent, or by removing the skill everywhere. Exclusions are kept in the plugin's own storage, on this machine, per project (all its worktrees): they are not in the repository, your team does not see them.
-
 ### Symbolic links and safety
 
 - A skill that is a **link to another copy of the project** (`.claude/skills/x -> ../../.agents/skills/x`, the form the `skills` CLI creates in its default mode) is the same copy as its target, never a divergence.
@@ -66,7 +62,7 @@ Orca labels this plugin **Full access**: it runs its own worker process on your 
 | Capability | Why |
 | --- | --- |
 | `workspace:read` | Know the focused workspace (path, branch, project, host) to list and manage its skills. |
-| `storage:own` | Keep the per-skill agent exclusions and the hidden agents in the plugin's own storage. |
+| `storage:own` | Keep the hidden agents in the plugin's own storage. |
 | `history:read` | Since 0.2: learn which agent each past session of yours used, to know which agents you really run. It reads only the agent name of each session, never titles or conversations, and stores none of it. |
 
 Beyond Orca's API, the worker:

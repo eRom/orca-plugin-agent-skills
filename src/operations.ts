@@ -1,4 +1,4 @@
-// Gestes sur les skills du projet : ajouter, propager, garder une version, retirer, retirer d'un dossier.
+// Gestes sur les skills du projet : ajouter, propager, garder une version, retirer.
 // Couche destructive : toute mise à la Corbeille ou tout écrasement dans le projet passe par le `Trasher` injecté, et
 // rien n'est jamais écrit ni retiré hors du projet (un dossier géré dont le chemin réel sort du projet est ignoré).
 import { lstat, mkdir, realpath } from 'node:fs/promises'
@@ -8,7 +8,7 @@ import { COPY_ONLY_DIRS, LIB_AGENT_BY_DIR, MANAGED_DIRS, targetDirOf, type Manag
 import { scanWorkspace, type DiskSkill, type ScanResult } from './scan'
 import { PLUGIN_LOCK_KEPT, PLUGIN_STAGE_INCOMPLETE, sanitizeName, toLibDiagnostic, type LibDiagnostic, type ResolvedSource, type SkillsLib } from './skills-lib'
 import type { Trasher } from './trash'
-import { buildRows, type LockEntry } from './visibility'
+import type { LockEntry } from './visibility'
 
 export type OpError = {
   code:
@@ -21,7 +21,6 @@ export type OpError = {
     | 'trash-unverified'
     | 'network-path'
     | 'unsafe-dir'
-    | 'linked-target'
     | 'gone'
     | 'preview-expired'
     | 'path-not-found'
@@ -34,11 +33,10 @@ export type OpError = {
   trashed?: boolean
 }
 
-export type OpResult = { ok: true; warnings: LibDiagnostic[]; lostAgents: string[]; removedAll?: boolean } | { ok: false; error: OpError }
+export type OpResult = { ok: true; warnings: LibDiagnostic[] } | { ok: false; error: OpError }
 
 export type OpContext = {
   root: string
-  home: string
   lib: SkillsLib
   /** `null` : pas de Corbeille sur cette machine, tout geste qui retire ou écrase est refusé. */
   trash: Trasher | null
@@ -46,11 +44,10 @@ export type OpContext = {
   noTrashCode: Extract<OpError['code'], 'no-trash' | 'trash-unverified' | 'network-path'>
   tmpdir: string
   writeDirs: readonly ManagedDir[]
-  active: readonly string[]
 }
 
 const fail = (error: OpError): OpResult => ({ ok: false, error })
-const done = (warnings: LibDiagnostic[], lostAgents: string[] = []): OpResult => ({ ok: true, warnings, lostAgents })
+const done = (warnings: LibDiagnostic[]): OpResult => ({ ok: true, warnings })
 
 function libError(error: unknown, trashed = false): OpError {
   return { code: 'lib', diagnostics: [toLibDiagnostic(error)], ...(trashed ? { trashed: true } : {}) }
@@ -91,12 +88,6 @@ async function readDisk(root: string): Promise<Disk | null> {
 }
 
 const skillOf = (scan: ScanResult, folder: string): DiskSkill | undefined => scan.skills.find((skill) => skill.folder === folder)
-
-/** Agents actifs qui voient la skill `folder` sur ce balayage. */
-function agentsSeeing(scan: ScanResult, ctx: OpContext, folder: string): string[] {
-  const row = buildRows(scan, new Map(), ctx.active, () => [], ctx.home).find((candidate) => candidate.folder === folder)
-  return row ? row.agents.filter((agent) => agent.state === 'sees').map((agent) => agent.agent) : []
-}
 
 /** Met à la Corbeille. Un échec dit s'il a déjà emporté une partie des chemins (`trashed`). */
 async function moveToTrash(trash: Trasher, paths: readonly string[]): Promise<OpError | null> {
@@ -332,34 +323,4 @@ export async function removeSkill(ctx: OpContext, folder: string): Promise<OpRes
     return fail(libError(error, true))
   }
   return done(warnings)
-}
-
-/** Retire la copie d'un seul dossier géré (`untrack` seulement s'il ne reste aucune autre copie) et dit quels agents actifs ne voient plus la skill. */
-export async function removeFromDir(ctx: OpContext, folder: string, dir: ManagedDir): Promise<OpResult> {
-  if (!ctx.trash) return fail({ code: ctx.noTrashCode })
-  const disk = await readDisk(ctx.root)
-  if (!disk) return fail({ code: 'no-workspace' })
-  if (disk.unsafe.includes(dir)) return fail({ code: 'unsafe-dir', dirs: [dir] })
-  const skill = skillOf(disk.scan, folder)
-  const copy = skill?.copies.find((candidate) => candidate.dir === dir)
-  if (!skill || !copy) return fail({ code: 'gone' })
-
-  // Une vraie copie vers laquelle un autre dossier pointe : la retirer casserait ce lien.
-  if (copy.kind === 'dir') {
-    const linkedFrom = skill.copies
-      .filter((other) => other.kind === 'internal-link' && other.realPath === copy.realPath && other.dir !== dir)
-      .map((other) => other.dir)
-    if (linkedFrom.length > 0) return fail({ code: 'linked-target', dirs: linkedFrom })
-  }
-
-  const before = agentsSeeing(disk.scan, ctx, folder)
-  // Dernière copie : c'est un retrait complet (Corbeille puis `untrack` gardé), le panneau efface alors les exclusions.
-  if (skill.copies.length === 1) {
-    const removed = await removeSkill(ctx, folder)
-    return removed.ok ? { ...removed, lostAgents: before, removedAll: true } : removed
-  }
-  const trashError = await moveToTrash(ctx.trash, [copy.path])
-  if (trashError) return fail(trashError)
-  const after = agentsSeeing(await scanWorkspace(ctx.root), ctx, folder)
-  return done([], before.filter((agent) => !after.includes(agent)))
 }

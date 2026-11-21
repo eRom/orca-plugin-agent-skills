@@ -41,8 +41,6 @@ export type OpRequest =
   | { kind: 'propagate'; folder: string; agents: string[] }
   | { kind: 'keep'; folder: string; hash: string }
   | { kind: 'remove'; folder: string }
-  | { kind: 'remove-dir'; folder: string; dir: ManagedDir }
-  | { kind: 'reinstate'; folder: string; agent: string }
 
 /** `opId` : identifie le geste dont `op.finished` rendra compte, après la réponse. */
 export type StartAnswer = { ok: true; opId: string } | { ok: false; error: OpError }

@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
-import { EXCLUSIONS_KEY } from './exclusions'
 import { HIDDEN_AGENTS_KEY } from './hidden-agents'
 import type { InventoryDeps } from './inventory'
 import type { OpFinished, OpRequest, PanelState } from './protocol'
@@ -48,11 +47,10 @@ const rowOf = (path: string, over: Partial<Row> = {}): Row => ({
 })
 const contextOf = (workspaceId: string) => ({ workspaceId, branch: 'feat/x', displayName: 'feature', terminals: [] })
 
-/** Leviers du test sur ce que le worker voit : stockage lent ou en panne, et les gestionnaires de requêtes (pour passer un `signal`). */
+/** Leviers du test sur ce que le worker voit : stockage lent, et les gestionnaires de requêtes (pour passer un `signal`). */
 type Controls = {
   /** Appelé après chaque lecture du stockage ; la valeur lue est rendue après l'attente (donc périmée). */
   afterStorageGet?: (key: string) => Promise<void>
-  failStorageSet: boolean
   /** Appelé avant que `workspace.list` réponde : de quoi faire attendre une requête à l'hôte. */
   beforeWorkspaceList?: () => Promise<void>
   handlers: Map<string, (input: unknown, context: { panel: unknown; signal: AbortSignal }) => Promise<unknown>>
@@ -97,7 +95,7 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
   const history = options.history === undefined ? ROMAIN_HISTORY : options.history
   let rows = options.rows ? options.rows(root) : [rowOf(root)]
   let focused = 'identity:x'
-  const controls: Controls = { failStorageSet: false, handlers: new Map() }
+  const controls: Controls = { handlers: new Map() }
   const host =
     options.host ??
     mockHost({
@@ -145,10 +143,6 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
                 const value = await orca.storage.get(key)
                 await controls.afterStorageGet?.(key)
                 return value
-              },
-              set: async (key: string, value: Parameters<typeof orca.storage.set>[1]) => {
-                if (controls.failStorageSet) throw new Error('storage is read-only')
-                return orca.storage.set(key, value)
               }
             },
             panels: {
@@ -200,8 +194,6 @@ async function settled(worker: Worker, count = 1): Promise<OpFinished> {
   await waitFor(() => worker.posts.slice(index + 1).some((post) => post.event === 'state.changed'), 'state.changed after op.finished')
   return finishedOps(worker)[count - 1]!
 }
-
-const storedExclusions = (host: ReturnType<typeof mockHost>): unknown => host.data().storage[EXCLUSIONS_KEY]
 
 function agentState(state: PanelState, folder: string, agent: string): string | undefined {
   return state.rows.find((row) => row.folder === folder)?.agents.find((candidate) => candidate.agent === agent)?.state
@@ -580,9 +572,6 @@ test('network workspace refuses removal before any trash call', async () => {
   assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })).ok, true)
   const removed = await settled(setup.worker)
   assert.deepEqual(removed.ok ? null : removed.error, { code: 'network-path' })
-  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.claude/skills' }, workspaceId: WS })).ok, true)
-  const removedDir = await settled(setup.worker, 2)
-  assert.deepEqual(removedDir.ok ? null : removedDir.error, { code: 'network-path' })
   assert.deepEqual(setup.trash.trashed, [], 'the trasher is never called')
   assert.equal(setup.lib.calls.untrack.length, 0)
   assert.ok(setup.worker.logs.some((line) => line.includes('op=remove folder=alpha error=network-path')))
@@ -609,74 +598,28 @@ test('an add whose trial fails is a lib error before starting', async () => {
   await setup.worker.deactivate()
 })
 
-test('remove-dir excludes the agents that lost the skill, per project', async () => {
+test('propagate copies the skill into the target dir of the agent and it then sees it', async () => {
   const setup = await boot()
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  writeSkill(setup.root, '.grok/skills', 'alpha')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'sees')
-
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' }, workspaceId: WS })
-  assert.equal(answer.ok, true)
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['grok'] } })
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'excluded')
-  await setup.worker.deactivate()
-
-  // Un nouveau worker sur le même stockage : l'exclusion survit.
-  const again = await boot({ host: setup.host, root: setup.root })
-  assert.equal(agentState(await stateOf(again.worker), 'alpha', 'grok'), 'excluded')
-  await again.worker.deactivate()
-
-  // Un second espace du même projet (autre identifiant, même `projectId`) la voit aussi.
-  const second = tempDir('worker-second')
-  writeSkill(second, '.agents/skills', 'alpha')
-  setup.focus('identity:y', [rowOf(second, { id: 'identity:y' })])
-  const other = await boot({ host: setup.host, root: second })
-  assert.equal(agentState(await stateOf(other.worker), 'alpha', 'grok'), 'excluded')
-  await other.worker.deactivate()
-})
-
-test('removing the last copy from a folder clears the exclusions like a full remove', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'], beta: ['codex'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  await stateOf(setup.worker)
-  const answer = await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.agents/skills' }, workspaceId: WS })
-  assert.equal(answer.ok, true)
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(storedExclusions(setup.host), { p1: { beta: ['codex'] } })
-  await setup.worker.deactivate()
-})
-
-test('reinstate copies into the target dir and lifts the exclusion', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'excluded')
-  const answer = await setup.worker.request('op.start', { op: { kind: 'reinstate', folder: 'alpha', agent: 'grok' }, workspaceId: WS })
+  writeSkill(setup.root, '.claude/skills', 'alpha')
+  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'absent')
+  const answer = await setup.worker.request('op.start', { op: { kind: 'propagate', folder: 'alpha', agents: ['grok'] }, workspaceId: WS })
   assert.equal(answer.ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
   assert.match(await readFile(join(setup.root, '.grok/skills/alpha/SKILL.md'), 'utf8'), /alpha/)
-  assert.deepEqual(storedExclusions(setup.host), {})
   assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'grok'), 'sees')
   await setup.worker.deactivate()
 })
 
-test('propagate lifts the exclusion of the agents it feeds', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok', 'codex'] } } } })
+test('exclusions stored by v0.1 are ignored: the agent is absent, nothing is read as an error', async () => {
+  // Le nom de la clé de la v0.1 est gelé ici à dessein : le plugin ne la lit plus, ne la migre pas et ne l'efface pas.
+  const legacy = { p1: { alpha: ['grok'] } }
+  const setup = await boot({ storage: { 'exclusions.v1': legacy } })
   writeSkill(setup.root, '.claude/skills', 'alpha')
-  await setup.worker.request('op.start', { op: { kind: 'propagate', folder: 'alpha', agents: ['grok'] }, workspaceId: WS })
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['codex'] } })
-  await setup.worker.deactivate()
-})
-
-test('remove clears the exclusions of the skill', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'], beta: ['codex'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  await stateOf(setup.worker)
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
-  assert.equal((await settled(setup.worker)).ok, true)
-  assert.deepEqual(setup.trash.trashed, [join(setup.root, '.agents/skills/alpha')])
-  assert.deepEqual(storedExclusions(setup.host), { p1: { beta: ['codex'] } })
+  const state = await stateOf(setup.worker)
+  assert.equal(agentState(state, 'alpha', 'grok'), 'absent')
+  assert.ok(state.rows[0]!.missingFor.includes('grok'))
+  assert.ok(state.rows[0]!.agents.every((agent) => agent.state === 'sees' || agent.state === 'absent'))
+  assert.deepEqual(setup.host.data().storage['exclusions.v1'], legacy, 'the stored value is left untouched')
   await setup.worker.deactivate()
 })
 
@@ -885,38 +828,6 @@ test('a worker restarted mid-gesture posts a free state', async () => {
   await restarted.worker.deactivate()
 })
 
-test('a state read never writes the exclusions: one hidden by a copy in another worktree comes back when that copy goes', async () => {
-  // Codex est exclu au stockage mais voit `alpha` sur ce disque (copie faite dans un autre worktree du projet).
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['codex'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  // Un stockage qui refuse toute écriture : une lecture d'état qui voudrait écrire échouerait.
-  setup.controls.failStorageSet = true
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'sees')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'sees')
-  assert.deepEqual(storedExclusions(setup.host), { p1: { alpha: ['codex'] } })
-
-  // La copie qui le nourrissait disparaît : l'exclusion, jamais levée, redevient visible.
-  rmSync(join(setup.root, '.agents/skills/alpha'), { recursive: true })
-  writeSkill(setup.root, '.claude/skills', 'alpha')
-  assert.equal(agentState(await stateOf(setup.worker), 'alpha', 'codex'), 'excluded')
-  await setup.worker.deactivate()
-})
-
-test('two gestures in a row each keep the exclusions the other one wrote', async () => {
-  const setup = await boot()
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  writeSkill(setup.root, '.grok/skills', 'alpha')
-  writeSkill(setup.root, '.agents/skills', 'beta')
-  writeSkill(setup.root, '.claude/skills', 'beta')
-  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.grok/skills' }, workspaceId: WS })).ok, true)
-  await settled(setup.worker, 1)
-  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'beta', dir: '.claude/skills' }, workspaceId: WS })).ok, true)
-  await settled(setup.worker, 2)
-  const stored = storedExclusions(setup.host) as { p1: Record<string, string[]> }
-  assert.deepEqual(Object.keys(stored.p1).sort(), ['alpha', 'beta'])
-  await setup.worker.deactivate()
-})
-
 test('a preview that waited on the host cannot release the source an add took meanwhile', async () => {
   const setup = await boot()
   const first = setup.lib.source([{ name: 'alpha' }])
@@ -1080,22 +991,6 @@ test('an add that throws after its trial disposes the trial and keeps the previe
   setup.lib.stage = original
   assert.equal((await setup.worker.request('op.start', ADD(previewId, ['alpha']))).ok, true)
   assert.equal((await settled(setup.worker)).ok, true)
-  await setup.worker.deactivate()
-})
-
-test('a gesture whose exclusions cannot be written still succeeds, with a warning', async () => {
-  const setup = await boot({ storage: { [EXCLUSIONS_KEY]: { p1: { alpha: ['grok'] } } } })
-  writeSkill(setup.root, '.agents/skills', 'alpha')
-  setup.controls.failStorageSet = true
-  await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
-  const finished = await settled(setup.worker)
-  assert.equal(finished.ok, true)
-  assert.deepEqual(
-    finished.warnings.map((warning) => warning.code),
-    ['PLUGIN_EXCLUSIONS_FAILED']
-  )
-  assert.ok(setup.worker.logs.some((line) => line.includes('PLUGIN_EXCLUSIONS_FAILED')))
-  assert.equal((await stateOf(setup.worker)).busy, null)
   await setup.worker.deactivate()
 })
 

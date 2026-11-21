@@ -56,7 +56,6 @@ test('the texts fixed by the spec are the French ones', () => {
   assert.equal(MESSAGES.en.wslWorkspace, 'WSL workspaces are not supported yet.')
   assert.equal(fr.replaceAsk('x'), "Remplacer x ? L'actuelle part à la Corbeille.")
   assert.equal(fr.removeAsk('x'), 'Retirer x du projet ? Elle disparaît pour tous les agents. Une copie part à la Corbeille.')
-  assert.equal(fr.pointsHere('.claude/skills'), ".claude/skills pointe ici : retirez-le d'abord")
   assert.equal(fr.addCount(3), 'Ajouter (3)')
 })
 
@@ -70,7 +69,6 @@ test('describeError translates every operation error code, in both languages', (
     }
     assert.ok(describeError({ code: 'collision', folders: ['alpha', 'beta'] }, m, 'win32').includes('alpha, beta'))
     assert.ok(describeError({ code: 'unsafe-dir', dirs: ['.claude/skills'] }, m, 'win32').includes('.claude/skills'))
-    assert.ok(describeError({ code: 'linked-target', dirs: ['.claude/skills'] }, m, 'win32').includes('.claude/skills'))
   }
 })
 
@@ -88,7 +86,6 @@ test('describeError translates library and plugin diagnostics by code', () => {
       'SKILLS_INVALID_LOCAL_LOCK',
       'SKILLS_LOCK_WRITE_FAILED',
       'SKILLS_SKILL_SKIPPED',
-      'PLUGIN_EXCLUSIONS_FAILED',
       'PLUGIN_LOCK_KEPT',
       'PLUGIN_UNSAFE_DIR',
       'PLUGIN_NOT_TRACKED',
