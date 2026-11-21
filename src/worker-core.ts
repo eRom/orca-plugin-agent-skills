@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { JsonValue, OrcaWorkerApi } from 'orca/worker'
-import { agentById } from './agents'
+import { agentById, byLabel } from './agents'
 import { EXCLUSIONS_KEY, exclude, excludedOf, include, parseExclusions, type Exclusions } from './exclusions'
 import { HIDDEN_AGENTS_KEY, parseHiddenAgents, setHidden } from './hidden-agents'
 import { listHistoryAgents } from './history'
@@ -187,7 +187,8 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`)
     }
-    const installed = found ? skillCapable(found.agents) : []
+    // Ordre alphabétique des libellés : une liste de 16 agents dans l'ordre du catalogue d'Orca se parcourt mal.
+    const installed = found ? byLabel(skillCapable(found.agents)) : []
     const hidden = await readHidden()
     const active = installed.filter((id) => !hidden.includes(id))
     if (active.length === 0) return { installed, hidden, active: [], fallback: true, writeDirs: FALLBACK_DIRS }

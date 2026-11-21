@@ -1,7 +1,7 @@
 // Invariants de la table des agents : chaque agent qui lit des skills a un signal de détection ou est déclaré non détecté.
 import { getSupportedAgents } from 'skills'
 import { assert, test } from 'orca/testing'
-import { AGENTS, HISTORY_AGENTS, UNDETECTED_AGENTS } from './agents'
+import { AGENTS, HISTORY_AGENTS, UNDETECTED_AGENTS, byLabel } from './agents'
 import { AGENT_READS } from './skill-dirs'
 
 const hasSignal = (id: string): boolean => {
@@ -35,6 +35,22 @@ test('undetected agents are catalogue agents that read skills', () => {
     assert.ok(AGENTS.some((agent) => agent.id === id), `${id} is a catalogue agent`)
     assert.ok((AGENT_READS[id] ?? []).length > 0, `${id} reads skills`)
   }
+})
+
+test('byLabel sorts agent ids by their label, ignoring case', () => {
+  // Libellés : Trae, Qwen Code, Claude Agent Teams, Claude, Codex, Charm (crush).
+  assert.deepEqual(byLabel(['trae', 'qwen-code', 'claude-agent-teams', 'claude', 'codex', 'crush']), [
+    'crush',
+    'claude',
+    'claude-agent-teams',
+    'codex',
+    'qwen-code',
+    'trae'
+  ])
+})
+
+test('byLabel keeps an unknown id, sorted by the id itself', () => {
+  assert.deepEqual(byLabel(['zzz-unknown', 'claude']), ['claude', 'zzz-unknown'])
 })
 
 test('history agents are catalogue agents', () => {

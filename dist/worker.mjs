@@ -21228,6 +21228,10 @@ var HISTORY_AGENTS = new Set([
 function agentById(id) {
   return AGENTS.find((spec) => spec.id === id);
 }
+function byLabel(ids) {
+  const labelOf = (id) => agentById(id)?.label ?? id;
+  return [...ids].sort((a2, b4) => labelOf(a2).localeCompare(labelOf(b4), "en", { sensitivity: "base" }));
+}
 
 // src/exclusions.ts
 var EXCLUSIONS_KEY = "exclusions.v1";
@@ -22169,7 +22173,7 @@ async function activateWith(orca, deps) {
     } catch (error) {
       orca.log(`inventory failed: ${messageOf(error)}`);
     }
-    const installed = found ? skillCapable(found.agents) : [];
+    const installed = found ? byLabel(skillCapable(found.agents)) : [];
     const hidden = await readHidden();
     const active = installed.filter((id) => !hidden.includes(id));
     if (active.length === 0)

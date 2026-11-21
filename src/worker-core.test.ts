@@ -254,11 +254,15 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   writeSkill(setup.root, '.agents/skills', 'beta')
   const state = await stateOf(setup.worker)
   assert.deepEqual(state.workspace, { status: 'ready', id: 'identity:x', name: 'feature', branch: 'feat/x', linkedWorktree: false, network: false })
+  // Par ordre alphabétique des libellés : Antigravity, Claude, Codex, DeepSeek Harness, Grok, OMP, OpenCode 2, Pi.
   assert.deepEqual(
     state.agents.map((agent) => agent.id),
-    ['claude', 'codex', 'grok', 'opencode2', 'dsh', 'pi', 'omp', 'antigravity']
+    ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'omp', 'opencode2', 'pi']
   )
-  assert.deepEqual(state.agents[0], { id: 'claude', label: 'Claude', icon: 'agent-icons/claude.png', trust: null })
+  assert.deepEqual(
+    state.agents.find((agent) => agent.id === 'claude'),
+    { id: 'claude', label: 'Claude', icon: 'agent-icons/claude.png', trust: null }
+  )
   assert.equal(state.inventory, 'detected')
   assert.deepEqual(
     state.rows.map((row) => row.folder),
@@ -282,8 +286,8 @@ test('trust-gated agents carry their trust marker', async () => {
     state.agents.map((agent) => [agent.id, agent.trust]),
     [
       ['codex', null],
-      ['mistral-vibe', 'vibe'],
-      ['hermes', 'hermes']
+      ['hermes', 'hermes'],
+      ['mistral-vibe', 'vibe']
     ]
   )
   await setup.worker.deactivate()
@@ -412,7 +416,7 @@ test('the agents of the history and the config dirs of the others are all detect
   const state = await stateOf(setup.worker)
   assert.deepEqual(
     state.detected.map((agent) => agent.id),
-    ['claude', 'codex', 'grok', 'opencode2', 'dsh', 'pi', 'omp', 'antigravity']
+    ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'omp', 'opencode2', 'pi']
   )
   assert.ok(!setup.worker.logs.some((line) => line.includes('SECRET-TITLE')), 'no session title is logged')
   await setup.worker.deactivate()

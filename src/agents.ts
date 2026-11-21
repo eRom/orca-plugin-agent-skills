@@ -124,3 +124,9 @@ export const UNDETECTED_AGENTS: readonly string[] = ['opencode2', 'muse']
 export function agentById(id: string): AgentSpec | undefined {
   return AGENTS.find((spec) => spec.id === id)
 }
+
+/** Identifiants triés par libellé, sans tenir compte de la casse : l'ordre de la section Agents et des pastilles. */
+export function byLabel(ids: readonly string[]): string[] {
+  const labelOf = (id: string): string => agentById(id)?.label ?? id
+  return [...ids].sort((a, b) => labelOf(a).localeCompare(labelOf(b), 'en', { sensitivity: 'base' }))
+}
