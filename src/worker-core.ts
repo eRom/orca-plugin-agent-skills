@@ -18,15 +18,19 @@ import { scanWorkspace } from './scan'
 import { searchSkills, SearchError } from './search'
 import { FALLBACK_DIRS, MANAGED_DIRS, skillCapable, TRUST_GATED, writeSet, type ManagedDir } from './skill-dirs'
 import { sanitizeName, toLibDiagnostic, type LibDiagnostic, type ResolvedSource, type SkillsLib } from './skills-lib'
-import type { Trasher } from './trash'
+import type { Trasher, TrashStatus } from './trash'
 import { buildRows, type LockEntry, type SourceLabel } from './visibility'
-import { resolveWorkspace, type FocusedWorkspace, type HostCall } from './workspace'
+import { resolveWorkspace, type FocusedWorkspace, type HostCall, type WorkspaceView } from './workspace'
 
 export type WorkerDeps = {
   lib: SkillsLib
   inventory: InventoryDeps
   /** `null` : pas de Corbeille sur cette machine. */
   trash: Trasher | null
+  /** Pourquoi il n'y a pas de Corbeille quand `trash` est `null` : absente (`missing`) ou OS non vérifié (`unverified`). */
+  trashStatus: Exclude<TrashStatus, 'network'>
+  /** Test seul : remplace `realpath` pour résoudre l'espace focalisé (le worker réel utilise celui de `node:fs`). */
+  realpath?: (path: string) => Promise<string>
   /** `null` : pas de sélecteur de dossier natif sur cette machine. */
   pickFolder: (() => Promise<string | null>) | null
   fetch: typeof fetch
@@ -64,6 +68,9 @@ function describeError(error: OpError): string {
 }
 const folderOf = (op: OpRequest): string => (op.kind === 'add' ? op.names.join(',') : op.folder)
 const WORKSPACE_CHANGED: OpError = { code: 'workspace-changed' }
+
+/** Vrai si l'espace prêt est sur un chemin réseau (UNC sous Windows). */
+const onNetwork = (view: WorkspaceView): boolean => view.status === 'ready' && view.network
 
 /** Vrai si l'espace focalisé est celui que le panneau montrait (même identifiant) : tout autre focus refuse le geste. */
 const isShownWorkspace = (focused: FocusedWorkspace, workspaceId: string): boolean => focused.view.status === 'ready' && focused.view.id === workspaceId
@@ -112,16 +119,23 @@ function reusingTrial(lib: SkillsLib, trial: Stage): SkillsLib {
 
 export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promise<void> {
   const hostCall = orca.host.call.bind(orca.host) as unknown as HostCall
-  // `resolveWorkspace` tourne à chaque lecture d'état : la forme de la racine n'est journalisée que quand elle change.
+  // `resolveWorkspace` tourne à chaque lecture d'état : la forme de la racine n'est journalisée que quand elle change
+  // (pas une fois par espace : un retour à une forme déjà vue après une autre est journalisé de nouveau).
   let lastShapeLine = ''
   const focusedWorkspace = () =>
-    resolveWorkspace(hostCall, deps.home, deps.platform, (line) => {
-      if (line.startsWith('workspace root shape=')) {
-        if (line === lastShapeLine) return
-        lastShapeLine = line
-      }
-      orca.log(line)
-    })
+    resolveWorkspace(
+      hostCall,
+      deps.home,
+      deps.platform,
+      (line) => {
+        if (line.startsWith('workspace root shape=')) {
+          if (line === lastShapeLine) return
+          lastShapeLine = line
+        }
+        orca.log(line)
+      },
+      deps.realpath
+    )
   let inventory: Inventory | null = null
   let probing: Promise<Inventory> | null = null
   let writing: Promise<unknown> = Promise.resolve()
@@ -236,7 +250,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       agents: agentViews(agents.active),
       detected: agentViews(agents.installed).map((view) => ({ ...view, hidden: agents.hidden.includes(view.id) })),
       inventory: agents.fallback ? ('fallback' as const) : ('detected' as const),
-      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null },
+      capabilities: { trash: (onNetwork(focused.view) ? 'network' : deps.trashStatus) as TrashStatus, folderPicker: deps.pickFolder !== null },
       platform: deps.platform
     }
     if (!('root' in focused)) return { ...base, rows: [], unsafeDirs: [], lockUnreadable: false, busy: current }
@@ -488,7 +502,7 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
       }
       if (colliding.length > 0) {
         if (!op.replace) return await refuse({ code: 'collision', folders: colliding })
-        if (!ctx.trash) return await refuse({ code: 'no-trash' })
+        if (!ctx.trash) return await refuse({ code: ctx.noTrashCode })
       }
       return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } }
     } catch (error) {
@@ -553,11 +567,14 @@ export async function activateWith(orca: OrcaWorkerApi, deps: WorkerDeps): Promi
     // Le geste a été décidé sur l'espace que le panneau montrait : si le focus a bougé depuis, rien n'est touché.
     if (!isShownWorkspace(focused, workspaceId)) return refuse(WORKSPACE_CHANGED)
     const agents = await agentsOf()
+    const network = onNetwork(focused.view)
     let ctx: OpContext = {
       root: focused.root,
       home: deps.home,
       lib: deps.lib,
-      trash: deps.trash,
+      // Sur un chemin réseau, la Corbeille système n'atteint pas le partage : aucun geste destructif, avant tout appel.
+      trash: network ? null : deps.trash,
+      noTrashCode: network ? 'network-path' : deps.trashStatus === 'unverified' ? 'trash-unverified' : 'no-trash',
       tmpdir: deps.tmpdir,
       writeDirs: agents.writeDirs,
       active: agents.active

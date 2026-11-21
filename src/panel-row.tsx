@@ -24,14 +24,14 @@ export type RowContext = {
 }
 
 /** Les lignes d'une note, trois au plus ; quand l'ancienne version est à la Corbeille, cette ligne reste. */
-export function noteLines(note: Note, m: Messages): string[] {
+export function noteLines(note: Note, m: Messages, platform: string): string[] {
   const error = note.error
-  const lines = error ? describeErrorLines(error, m) : note.message === null ? [] : [note.message]
+  const lines = error ? describeErrorLines(error, m, platform) : note.message === null ? [] : [note.message]
   return error?.trashed && lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES - 1), lines[lines.length - 1]!] : lines.slice(0, MAX_LINES)
 }
 
-function warningLines(note: Note, m: Messages): string[] {
-  return note.warnings.flatMap((warning) => describeErrorLines(warning, m)).slice(0, MAX_LINES)
+function warningLines(note: Note, m: Messages, platform: string): string[] {
+  return note.warnings.flatMap((warning) => describeErrorLines(warning, m, platform)).slice(0, MAX_LINES)
 }
 
 function renderLines(key: string, lines: string[]) {
@@ -47,10 +47,10 @@ function renderLines(key: string, lines: string[]) {
 }
 
 /** Erreur et avertissements d'un geste, en bandeaux ; rien quand la note est vide. */
-export function renderNote(key: string, note: Note | null | undefined, m: Messages) {
+export function renderNote(key: string, note: Note | null | undefined, m: Messages, platform: string) {
   if (!note) return null
-  const errors = noteLines(note, m)
-  const warnings = warningLines(note, m)
+  const errors = noteLines(note, m, platform)
+  const warnings = warningLines(note, m, platform)
   if (errors.length === 0 && warnings.length === 0) return null
   return (
     <Stack key={key} gap="xs">
@@ -353,7 +353,7 @@ export function renderRow(row: SkillRow, ctx: RowContext) {
       ) : null}
       {running ? renderProgress(`progress-${row.folder}`, progressLabel(running, m)) : null}
       {renderConfirm(row, ctx)}
-      {renderNote(`note-${row.folder}`, note, m)}
+      {renderNote(`note-${row.folder}`, note, m, ctx.state.platform)}
       {open ? renderDetails(row, ctx) : null}
     </Box>
   )

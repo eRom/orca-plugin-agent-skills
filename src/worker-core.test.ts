@@ -116,6 +116,7 @@ async function boot(options: SetupOptions = {}): Promise<Setup> {
     lib,
     inventory,
     trash,
+    trashStatus: 'ready',
     pickFolder: null,
     fetch: async () => {
       throw new Error('the network must not be reached')
@@ -264,7 +265,7 @@ test('state for a focused local worktree lists its skills and Romain agents', as
   assert.equal(agentState(state, 'beta', 'codex'), 'sees')
   assert.deepEqual(state.unsafeDirs, [])
   assert.equal(state.lockUnreadable, false)
-  assert.deepEqual(state.capabilities, { trash: true, folderPicker: true })
+  assert.deepEqual(state.capabilities, { trash: 'ready', folderPicker: true })
   assert.equal(state.platform, 'darwin')
   assert.equal(state.busy, null)
   await setup.worker.deactivate()
@@ -517,11 +518,49 @@ test('add reports collisions before starting', async () => {
 })
 
 test('replace without a trash is refused before starting', async () => {
-  const setup = await boot({ deps: { trash: null } })
+  const setup = await boot({ deps: { trash: null, trashStatus: 'missing' } })
   writeSkill(setup.root, '.claude/skills', 'alpha')
   const previewId = await previewAdd(setup, ['alpha'])
   const answer = await setup.worker.request('op.start', ADD(previewId, ['alpha'], true))
   assert.deepEqual(answer, { ok: false, error: { code: 'no-trash' } })
+  await setup.worker.deactivate()
+})
+
+test('unverified trash refuses removal with its own code', async () => {
+  const setup = await boot({ deps: { trash: null, trashStatus: 'unverified', platform: 'linux' } })
+  writeSkill(setup.root, '.claude/skills', 'alpha')
+  assert.equal((await stateOf(setup.worker)).capabilities.trash, 'unverified')
+  const started = await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })
+  assert.equal(started.ok, true)
+  const finished = await settled(setup.worker)
+  assert.deepEqual(finished.ok ? null : finished.error, { code: 'trash-unverified' })
+  // Un remplacement est refusé avant de démarrer, avec le même code.
+  const previewId = await previewAdd(setup, ['alpha'])
+  assert.deepEqual(await setup.worker.request('op.start', ADD(previewId, ['alpha'], true)), { ok: false, error: { code: 'trash-unverified' } })
+  assert.ok(existsSync(join(setup.root, '.claude/skills/alpha')), 'the skill is still on disk')
+  assert.equal(setup.lib.calls.untrack.length, 0)
+  assert.equal(setup.lib.calls.install.length, 0)
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=remove folder=alpha error=trash-unverified')))
+  await setup.worker.deactivate()
+})
+
+test('network workspace refuses removal before any trash call', async () => {
+  const unc = '\\\\srv\\share\\project'
+  // La racine UNC n'existe pas sur ce Mac : `realpath` est simulé pour que l'espace soit prêt, comme sous Windows.
+  const setup = await boot({ deps: { platform: 'win32', realpath: async (path) => path }, rows: () => [rowOf(unc)] })
+  const state = await stateOf(setup.worker)
+  assert.equal(state.workspace.status === 'ready' ? state.workspace.network : null, true)
+  assert.equal(state.capabilities.trash, 'network')
+  // Une Corbeille est pourtant disponible (`fakeTrasher`) : le contexte du geste n'y a pas accès.
+  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove', folder: 'alpha' }, workspaceId: WS })).ok, true)
+  const removed = await settled(setup.worker)
+  assert.deepEqual(removed.ok ? null : removed.error, { code: 'network-path' })
+  assert.equal((await setup.worker.request('op.start', { op: { kind: 'remove-dir', folder: 'alpha', dir: '.claude/skills' }, workspaceId: WS })).ok, true)
+  const removedDir = await settled(setup.worker, 2)
+  assert.deepEqual(removedDir.ok ? null : removedDir.error, { code: 'network-path' })
+  assert.deepEqual(setup.trash.trashed, [], 'the trasher is never called')
+  assert.equal(setup.lib.calls.untrack.length, 0)
+  assert.ok(setup.worker.logs.some((line) => line.includes('op=remove folder=alpha error=network-path')))
   await setup.worker.deactivate()
 })
 
@@ -1183,7 +1222,7 @@ test('a source inside a managed folder of the project is refused before it is re
   await setup.worker.deactivate()
 })
 
-test('a WSL workspace on Windows is explained, never scanned, and its shape is logged once', async () => {
+test('a WSL workspace on Windows is explained, never scanned, and its shape is logged only when it changes', async () => {
   const setup = await boot({ deps: { platform: 'win32' } })
   setup.focus('identity:x', [rowOf('/home/r/p')])
   const first = await stateOf(setup.worker)
@@ -1193,7 +1232,22 @@ test('a WSL workspace on Windows is explained, never scanned, and its shape is l
   assert.deepEqual(
     setup.worker.logs.filter((line) => line.startsWith('workspace root shape=')),
     ['workspace root shape=posix'],
-    'the shape is logged once per workspace, never with the path'
+    'an unchanged shape is not logged again, and the path is never logged'
+  )
+  await setup.worker.deactivate()
+})
+
+test('refocusing from a drive-letter workspace to a UNC one logs the new shape', async () => {
+  const setup = await boot({ deps: { platform: 'win32' } })
+  setup.focus('identity:x', [rowOf('C:\\dev\\p')])
+  await stateOf(setup.worker)
+  await stateOf(setup.worker)
+  setup.focus('identity:x', [rowOf('\\\\srv\\share\\p')])
+  await stateOf(setup.worker)
+  await stateOf(setup.worker)
+  assert.deepEqual(
+    setup.worker.logs.filter((line) => line.startsWith('workspace root shape=')),
+    ['workspace root shape=drive', 'workspace root shape=unc']
   )
   await setup.worker.deactivate()
 })

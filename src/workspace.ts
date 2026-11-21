@@ -26,7 +26,7 @@ export function classifyRoot(path: string, platform: string): 'drive' | 'unc' | 
   return 'other'
 }
 
-const isRemoteHost =(hostId: string | null): boolean => hostId !== null && (hostId.startsWith('ssh:') || hostId.startsWith('runtime:'))
+const isRemoteHost = (hostId: string | null): boolean => hostId !== null && (hostId.startsWith('ssh:') || hostId.startsWith('runtime:'))
 
 /** Un worktree lié a un fichier `.git` (un dossier `.git` est celui du dépôt principal). */
 async function isLinkedWorktree(root: string): Promise<boolean> {

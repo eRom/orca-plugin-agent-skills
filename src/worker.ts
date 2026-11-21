@@ -12,10 +12,12 @@ import { activateWith } from './worker-core'
 export { deactivate } from './worker-core'
 
 export default function activate(orca: OrcaWorkerApi): Promise<void> {
+  const { trasher, status } = systemTrasher(process.platform, existsSync, execRunner)
   return activateWith(orca, {
     lib: realSkillsLib,
     inventory: { libAgents: realLibAgents, exists: existsSync, now: Date.now },
-    trash: systemTrasher(process.platform, existsSync, execRunner),
+    trash: trasher,
+    trashStatus: status,
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
     searchBase: SKILLS_SH,

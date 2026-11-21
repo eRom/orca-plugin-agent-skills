@@ -2,6 +2,7 @@
 // Aucun CSS ni DOM : Orca dessine les composants. Le worker lit le disque et écrit ; ici, on montre et on demande.
 import { Button, Callout, EmptyState, env, IconButton, Image, read, Row, Separator, Skeleton, Stack, Switch, Text, Box } from 'orca'
 import { dimIcon, themedIcon } from './icons'
+import { osLabel, type Messages } from './copy'
 import { currentLocale, copy } from './panel-copy'
 import { CHIP_SLOT_WIDTH, renderProgress, renderNote, renderRow, type RowContext } from './panel-row'
 import { renderAddFlow, renderPathLine, renderReplaceConfirm, renderResults, renderSearchField } from './panel-search'
@@ -97,6 +98,20 @@ function renderAgents(state: PanelState) {
   )
 }
 
+/** Le bandeau de la Corbeille : `ready` n'en a pas. Le `switch` est exhaustif, un statut ajouté sans bandeau ne compile pas. */
+function trashBanner(state: PanelState, m: Messages): string | null {
+  switch (state.capabilities.trash) {
+    case 'ready':
+      return null
+    case 'missing':
+      return m.trashUnavailable
+    case 'unverified':
+      return m.trashUnverified(osLabel(state.platform))
+    case 'network':
+      return m.trashNetwork
+  }
+}
+
 /** Les corps des espaces inutilisables : un message, aucun geste. */
 function workspaceMessage(state: PanelState): string | null {
   const m = copy()
@@ -122,7 +137,7 @@ function renderOrphanNotes(state: PanelState) {
   const known = new Set(state.rows.map((row) => row.folder))
   return Object.entries(read(notes))
     .filter(([folder]) => !known.has(folder))
-    .map(([folder, note]) => renderNote(`orphan-${folder}`, note, m))
+    .map(([folder, note]) => renderNote(`orphan-${folder}`, note, m, state.platform))
 }
 
 function renderList(state: PanelState, ctx: RowContext) {
@@ -145,6 +160,7 @@ function renderReady(state: PanelState) {
   const busy = read(pending) ?? state.busy
   const ctx: RowContext = { state, m, busy, confirm: read(confirmation) }
   const typing = text.trim().length >= MIN_QUERY_LENGTH
+  const trashText = trashBanner(state, m)
   return (
     <Stack gap="md">
       {state.inventory === 'fallback' ? (
@@ -163,13 +179,13 @@ function renderReady(state: PanelState) {
         </Callout>
       ))}
       {state.lockUnreadable ? <Callout tone="warning">{m.lockUnreadable}</Callout> : null}
-      {state.capabilities.trash ? null : <Callout tone="warning">{m.trashUnavailable}</Callout>}
+      {trashText === null ? null : <Callout tone="warning">{trashText}</Callout>}
       {renderSearchField(state, text, m)}
       {busy?.kind === 'add' ? renderProgress('add-progress', m.adding) : null}
       {renderReplaceConfirm(ctx.confirm, m)}
-      {renderNote('add-note', read(addNote), m)}
+      {renderNote('add-note', read(addNote), m, state.platform)}
       {renderOrphanNotes(state)}
-      {renderAddFlow(flow, busy, m)}
+      {renderAddFlow(flow, busy, m, state.platform)}
       {flow === null ? renderPathLine(read(pathCheck), busy, m) : null}
       {/* Ce que le champ contient décide du corps : rien, la liste du projet ; un chemin, la ligne d'ajout ci-dessus ; sinon les résultats. */}
       {typing ? (isPathInput(text.trim(), state.platform) ? null : renderResults(read(searchView), busy, flow?.status === 'loading', currentLocale(), m)) : renderList(state, ctx)}

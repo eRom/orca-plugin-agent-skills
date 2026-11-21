@@ -17,7 +17,7 @@ function setup(label: string, writeDirs: readonly ManagedDir[] = WRITE_DIRS) {
   const root = tempDir(`ops-${label}`)
   const lib = fakeSkillsLib()
   const trash = fakeTrasher()
-  const ctx: OpContext = { root, home: '/home/test', lib, trash, tmpdir: tempDir(`ops-${label}-tmp`), writeDirs, active: ROMAIN_AGENTS }
+  const ctx: OpContext = { root, home: '/home/test', lib, trash, noTrashCode: 'no-trash', tmpdir: tempDir(`ops-${label}-tmp`), writeDirs, active: ROMAIN_AGENTS }
   const source = lib.source([
     { name: 'alpha', body: 'Alpha v1\n' },
     { name: 'Beta Skill', body: 'Beta v1\n' }
@@ -109,6 +109,24 @@ test('replace without a trash is refused', async () => {
   assert.equal(error.code, 'no-trash')
   assert.equal(await hashOf(root, '.claude/skills', 'alpha'), before)
   assert.equal(lib.calls.install.length, 0)
+})
+
+test('every gesture that needs the Trash refuses with the code of its context, touching nothing', async () => {
+  for (const code of ['trash-unverified', 'network-path'] as const) {
+    const { root, lib, ctx, source } = setup(`refuse-${code}`)
+    writeSkill(root, '.claude/skills', 'alpha', 'name: alpha', 'Old content\n')
+    writeSkill(root, '.agents/skills', 'alpha', 'name: alpha', 'Other content\n')
+    const before = [await hashOf(root, '.claude/skills', 'alpha'), await hashOf(root, '.agents/skills', 'alpha')]
+    const refused = { ...ctx, trash: null, noTrashCode: code }
+    assert.equal(failure(await addSkills(refused, source, ['alpha'], true)).code, code)
+    assert.equal(failure(await removeSkill(refused, 'alpha')).code, code)
+    assert.equal(failure(await removeFromDir(refused, 'alpha', '.claude/skills')).code, code)
+    const hash = await hashOf(root, '.claude/skills', 'alpha')
+    assert.equal(failure(await keepVersion(refused, 'alpha', hash)).code, code)
+    assert.deepEqual([await hashOf(root, '.claude/skills', 'alpha'), await hashOf(root, '.agents/skills', 'alpha')], before)
+    assert.equal(lib.calls.install.length, 0)
+    assert.equal(lib.calls.untrack.length, 0)
+  }
 })
 
 test('an install failing after the trash says so', async () => {

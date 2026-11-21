@@ -73,7 +73,7 @@ function stateOf(overrides: Partial<PanelState>): PanelState {
     rows: READY_ROWS,
     unsafeDirs: [],
     lockUnreadable: false,
-    capabilities: { trash: true, folderPicker: true },
+    capabilities: { trash: 'ready', folderPicker: true },
     platform: 'darwin',
     busy: null,
     ...overrides

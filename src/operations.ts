@@ -18,6 +18,8 @@ export type OpError = {
     | 'source-in-project'
     | 'collision'
     | 'no-trash'
+    | 'trash-unverified'
+    | 'network-path'
     | 'unsafe-dir'
     | 'linked-target'
     | 'gone'
@@ -40,6 +42,8 @@ export type OpContext = {
   lib: SkillsLib
   /** `null` : pas de Corbeille sur cette machine, tout geste qui retire ou écrase est refusé. */
   trash: Trasher | null
+  /** Le code du refus quand `trash` est `null` : l'utilisateur doit savoir pourquoi (absente, non vérifiée, chemin réseau). */
+  noTrashCode: Extract<OpError['code'], 'no-trash' | 'trash-unverified' | 'network-path'>
   tmpdir: string
   writeDirs: readonly ManagedDir[]
   active: readonly string[]
@@ -170,7 +174,7 @@ export async function addSkills(
     let trashed = false
     if (collidingPaths.length > 0) {
       if (!replace) return fail({ code: 'collision', folders: collidingFolders })
-      if (!ctx.trash) return fail({ code: 'no-trash' })
+      if (!ctx.trash) return fail({ code: ctx.noTrashCode })
       const trashError = await moveToTrash(ctx.trash, collidingPaths)
       if (trashError) return fail(trashError)
       trashed = true
@@ -250,7 +254,7 @@ export async function keepVersion(ctx: OpContext, folder: string, hash: string):
   // Un lien interne suit sa cible, un lien externe n'est jamais écrit : seules les vraies copies différentes sont remplacées.
   const stale = skill.copies.filter((copy) => copy.kind === 'dir' && copy.hash !== hash)
   if (stale.length === 0) return done([])
-  if (!ctx.trash) return fail({ code: 'no-trash' })
+  if (!ctx.trash) return fail({ code: ctx.noTrashCode })
   const trashError = await moveToTrash(
     ctx.trash,
     stale.map((copy) => copy.path)
@@ -273,7 +277,7 @@ export async function keepVersion(ctx: OpContext, folder: string, hash: string):
  * tout ce qui occupe encore ces chemins (une entrée que le balayage ne liste pas, sans SKILL.md par exemple).
  */
 export async function removeSkill(ctx: OpContext, folder: string): Promise<OpResult> {
-  if (!ctx.trash) return fail({ code: 'no-trash' })
+  if (!ctx.trash) return fail({ code: ctx.noTrashCode })
   const disk = await readDisk(ctx.root)
   if (!disk) return fail({ code: 'no-workspace' })
   const skill = skillOf(disk.scan, folder)
@@ -332,7 +336,7 @@ export async function removeSkill(ctx: OpContext, folder: string): Promise<OpRes
 
 /** Retire la copie d'un seul dossier géré (`untrack` seulement s'il ne reste aucune autre copie) et dit quels agents actifs ne voient plus la skill. */
 export async function removeFromDir(ctx: OpContext, folder: string, dir: ManagedDir): Promise<OpResult> {
-  if (!ctx.trash) return fail({ code: 'no-trash' })
+  if (!ctx.trash) return fail({ code: ctx.noTrashCode })
   const disk = await readDisk(ctx.root)
   if (!disk) return fail({ code: 'no-workspace' })
   if (disk.unsafe.includes(dir)) return fail({ code: 'unsafe-dir', dirs: [dir] })

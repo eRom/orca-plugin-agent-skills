@@ -21102,6 +21102,8 @@ async function realLibAgents(home2) {
 // src/trash.ts
 import { execFile as execFile2 } from "node:child_process";
 var TRASH_BIN = "/usr/bin/trash";
+var GIO_BIN = "/usr/bin/gio";
+var TRASH_VERIFIED = new Set(["darwin"]);
 var execRunner = (file, args) => new Promise((resolve2, reject) => {
   execFile2(file, [...args], { encoding: "utf8" }, (error, stdout, stderr) => {
     if (!error)
@@ -21112,14 +21114,26 @@ var execRunner = (file, args) => new Promise((resolve2, reject) => {
     reject(error);
   });
 });
-function systemTrasher(platform2, exists, run) {
-  if (platform2 !== "darwin" || !exists(TRASH_BIN))
-    return null;
-  return async (paths) => {
-    const { code, stderr } = await run(TRASH_BIN, paths);
+var COMMANDS = {
+  darwin: { bin: TRASH_BIN, args: (paths) => [...paths] },
+  linux: { bin: GIO_BIN, args: (paths) => ["trash", "--", ...paths] }
+};
+function systemTrasher(platform2, exists, run, verified = TRASH_VERIFIED) {
+  if (platform2 === "win32")
+    return { trasher: null, status: "unverified" };
+  const command = Object.prototype.hasOwnProperty.call(COMMANDS, platform2) ? COMMANDS[platform2] : undefined;
+  if (!command)
+    return { trasher: null, status: "missing" };
+  if (!verified.has(platform2))
+    return { trasher: null, status: "unverified" };
+  if (!exists(command.bin))
+    return { trasher: null, status: "missing" };
+  const trasher = async (paths) => {
+    const { code, stderr } = await run(command.bin, command.args(paths));
     if (code !== 0)
-      throw new Error(stderr.trim() || `trash exited with code ${code}`);
+      throw new Error(stderr.trim() || `${command.bin} exited with code ${code}`);
   };
+  return { trasher, status: "ready" };
 }
 
 // src/worker-core.ts
@@ -21825,7 +21839,7 @@ async function addSkills(ctx, source, names, replace) {
       if (!replace)
         return fail({ code: "collision", folders: collidingFolders });
       if (!ctx.trash)
-        return fail({ code: "no-trash" });
+        return fail({ code: ctx.noTrashCode });
       const trashError = await moveToTrash(ctx.trash, collidingPaths);
       if (trashError)
         return fail(trashError);
@@ -21904,7 +21918,7 @@ async function keepVersion(ctx, folder, hash) {
   if (stale.length === 0)
     return done([]);
   if (!ctx.trash)
-    return fail({ code: "no-trash" });
+    return fail({ code: ctx.noTrashCode });
   const trashError = await moveToTrash(ctx.trash, stale.map((copy) => copy.path));
   if (trashError)
     return fail(trashError);
@@ -21919,7 +21933,7 @@ async function keepVersion(ctx, folder, hash) {
 }
 async function removeSkill(ctx, folder) {
   if (!ctx.trash)
-    return fail({ code: "no-trash" });
+    return fail({ code: ctx.noTrashCode });
   const disk = await readDisk(ctx.root);
   if (!disk)
     return fail({ code: "no-workspace" });
@@ -21972,7 +21986,7 @@ async function removeSkill(ctx, folder) {
 }
 async function removeFromDir(ctx, folder, dir) {
   if (!ctx.trash)
-    return fail({ code: "no-trash" });
+    return fail({ code: ctx.noTrashCode });
   const disk = await readDisk(ctx.root);
   if (!disk)
     return fail({ code: "no-workspace" });
@@ -22065,6 +22079,7 @@ function describeError(error) {
 }
 var folderOf = (op) => op.kind === "add" ? op.names.join(",") : op.folder;
 var WORKSPACE_CHANGED = { code: "workspace-changed" };
+var onNetwork = (view) => view.status === "ready" && view.network;
 var isShownWorkspace = (focused, workspaceId) => focused.view.status === "ready" && focused.view.id === workspaceId;
 async function overlapsManagedDirs(path2, root) {
   const rootReal = await realpath6(root).catch(() => null);
@@ -22109,7 +22124,7 @@ async function activateWith(orca, deps) {
       lastShapeLine = line;
     }
     orca.log(line);
-  });
+  }, deps.realpath);
   let inventory = null;
   let probing = null;
   let writing = Promise.resolve();
@@ -22199,7 +22214,7 @@ async function activateWith(orca, deps) {
       agents: agentViews(agents2.active),
       detected: agentViews(agents2.installed).map((view) => ({ ...view, hidden: agents2.hidden.includes(view.id) })),
       inventory: agents2.fallback ? "fallback" : "detected",
-      capabilities: { trash: deps.trash !== null, folderPicker: deps.pickFolder !== null },
+      capabilities: { trash: onNetwork(focused.view) ? "network" : deps.trashStatus, folderPicker: deps.pickFolder !== null },
       platform: deps.platform
     };
     if (!("root" in focused))
@@ -22425,7 +22440,7 @@ ${hit.source}`) })) };
         if (!op.replace)
           return await refuse({ code: "collision", folders: colliding });
         if (!ctx.trash)
-          return await refuse({ code: "no-trash" });
+          return await refuse({ code: ctx.noTrashCode });
       }
       return { ctx: { ...ctx, lib: reusingTrial(ctx.lib, trial) } };
     } catch (error) {
@@ -22489,11 +22504,13 @@ ${hit.source}`) })) };
     if (!isShownWorkspace(focused, workspaceId))
       return refuse(WORKSPACE_CHANGED);
     const agents2 = await agentsOf();
+    const network = onNetwork(focused.view);
     let ctx = {
       root: focused.root,
       home: deps.home,
       lib: deps.lib,
-      trash: deps.trash,
+      trash: network ? null : deps.trash,
+      noTrashCode: network ? "network-path" : deps.trashStatus === "unverified" ? "trash-unverified" : "no-trash",
       tmpdir: deps.tmpdir,
       writeDirs: agents2.writeDirs,
       active: agents2.active
@@ -22555,10 +22572,12 @@ ${hit.source}`) })) };
 
 // src/worker.ts
 function activate(orca) {
+  const { trasher, status } = systemTrasher(process.platform, existsSync3, execRunner);
   return activateWith(orca, {
     lib: realSkillsLib,
     inventory: { libAgents: realLibAgents, exists: existsSync3, now: Date.now },
-    trash: systemTrasher(process.platform, existsSync3, execRunner),
+    trash: trasher,
+    trashStatus: status,
     pickFolder: folderPicker(process.platform, execRunner),
     fetch,
     searchBase: SKILLS_SH,

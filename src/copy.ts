@@ -94,6 +94,8 @@ export type Messages = {
   // Bandeaux et erreurs.
   outsideProject: (dir: string) => string
   trashUnavailable: string
+  trashUnverified: (os: string) => string
+  trashNetwork: string
   lockUnreadable: string
   trashed: string
   errors: {
@@ -101,6 +103,8 @@ export type Messages = {
     noWorkspace: string
     collision: (folders: string) => string
     noTrash: string
+    trashUnverified: (os: string) => string
+    networkPath: string
     unsafeDir: (dirs: string) => string
     linkedTarget: (dirs: string) => string
     gone: string
@@ -220,6 +224,8 @@ const en: Messages = {
 
   outsideProject: (dir) => `${dir} points outside this project: nothing is written to it or removed from it.`,
   trashUnavailable: 'The Trash is unavailable: replacing and removing are refused.',
+  trashUnverified: (os) => `The Trash is not verified on ${os} yet: replacing and removing are refused.`,
+  trashNetwork: 'Workspace on a network path: no Trash, replacing and removing are refused.',
   lockUnreadable: 'skills-lock.json cannot be read: sources are not shown and an add may fail.',
   trashed: 'The replaced version is in the Trash.',
   errors: {
@@ -227,6 +233,8 @@ const en: Messages = {
     noWorkspace: 'No usable workspace.',
     collision: (folders) => `A skill with the same name already exists: ${folders}.`,
     noTrash: 'The Trash is unavailable: nothing was replaced or removed.',
+    trashUnverified: (os) => `The Trash is not verified on ${os} yet: nothing was replaced or removed.`,
+    networkPath: 'No Trash on a network path: nothing was replaced or removed.',
     unsafeDir: (dirs) => `${dirs} points outside the project: nothing was written there.`,
     linkedTarget: (dirs) => `${dirs} points here: remove it first`,
     gone: 'This skill no longer exists on disk.',
@@ -345,6 +353,8 @@ const fr: Messages = {
 
   outsideProject: (dir) => `${dir} pointe hors du projet : rien n'y est écrit ni retiré.`,
   trashUnavailable: 'La Corbeille est indisponible : remplacer et retirer sont refusés.',
+  trashUnverified: (os) => `Corbeille pas encore vérifiée sous ${os} : remplacer et retirer sont refusés.`,
+  trashNetwork: 'Espace sur un chemin réseau : pas de Corbeille, remplacer et retirer sont refusés.',
   lockUnreadable: "skills-lock.json est illisible : les sources ne s'affichent pas et un ajout peut échouer.",
   trashed: 'La version remplacée est dans la Corbeille.',
   errors: {
@@ -352,6 +362,8 @@ const fr: Messages = {
     noWorkspace: 'Aucun espace de travail utilisable.',
     collision: (folders) => `Une skill du même nom existe déjà : ${folders}.`,
     noTrash: "La Corbeille est indisponible : rien n'a été remplacé ni retiré.",
+    trashUnverified: (os) => `Corbeille pas encore vérifiée sous ${os} : rien n'a été remplacé ni retiré.`,
+    networkPath: "Pas de Corbeille sur un chemin réseau : rien n'a été remplacé ni retiré.",
     unsafeDir: (dirs) => `${dirs} pointe hors du projet : rien n'y a été écrit.`,
     linkedTarget: (dirs) => `${dirs} pointe ici : retirez-le d'abord`,
     gone: "Cette skill n'existe plus sur le disque.",
@@ -407,6 +419,8 @@ const OP_ERROR_CODES: ReadonlySet<string> = new Set<OpError['code']>([
   'source-in-project',
   'collision',
   'no-trash',
+  'trash-unverified',
+  'network-path',
   'unsafe-dir',
   'linked-target',
   'gone',
@@ -425,8 +439,22 @@ function describeDiagnostic(diagnostic: LibDiagnostic, m: Messages): string {
   return diagnostic.skill ? `${text} (${diagnostic.skill})` : text
 }
 
-/** Les diagnostics d'une erreur, un par ligne : le panneau n'en montre que trois. */
-export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages): string[] {
+/** Le nom d'un OS tel que l'utilisateur le dit (`process.platform` pour les autres). */
+export function osLabel(platform: string): string {
+  switch (platform) {
+    case 'win32':
+      return 'Windows'
+    case 'linux':
+      return 'Linux'
+    case 'darwin':
+      return 'macOS'
+    default:
+      return platform
+  }
+}
+
+/** Les diagnostics d'une erreur, un par ligne : le panneau n'en montre que trois. `platform` : celui du worker, pour nommer l'OS. */
+export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages, platform: string): string[] {
   if (!isOpError(error)) return [describeDiagnostic(error, m)]
   const lines = ((): string[] => {
     switch (error.code) {
@@ -442,6 +470,10 @@ export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages):
         return [m.errors.collision((error.folders ?? []).join(', '))]
       case 'no-trash':
         return [m.errors.noTrash]
+      case 'trash-unverified':
+        return [m.errors.trashUnverified(osLabel(platform))]
+      case 'network-path':
+        return [m.errors.networkPath]
       case 'unsafe-dir':
         return [m.errors.unsafeDir((error.dirs ?? []).join(', '))]
       case 'linked-target':
@@ -465,4 +497,4 @@ export function describeErrorLines(error: OpError | LibDiagnostic, m: Messages):
 }
 
 /** Le texte d'une erreur en une chaîne (lignes jointes par un espace). */
-export const describeError = (error: OpError | LibDiagnostic, m: Messages): string => describeErrorLines(error, m).join(' ')
+export const describeError = (error: OpError | LibDiagnostic, m: Messages, platform: string): string => describeErrorLines(error, m, platform).join(' ')

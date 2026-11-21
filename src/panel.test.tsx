@@ -71,7 +71,7 @@ function stateOf(options: StateOptions = {}): PanelState {
     rows,
     unsafeDirs: [],
     lockUnreadable: false,
-    capabilities: { trash: true, folderPicker: true },
+    capabilities: { trash: 'ready', folderPicker: true },
     platform: 'darwin',
     busy: null,
     ...options.overrides
@@ -569,7 +569,7 @@ test('cancelling the folder dialog leaves the field alone, and a timeout stays s
 })
 
 test('hides the folder button when the worker cannot open the dialog', async () => {
-  const state = stateOf({ skills: [HANDWRITTEN], overrides: { capabilities: { trash: true, folderPicker: false } } })
+  const state = stateOf({ skills: [HANDWRITTEN], overrides: { capabilities: { trash: 'ready', folderPicker: false } } })
   const { view } = await open({ state })
   assert.equal(view.find({ label: FR.pickFolderLabel }), null)
   await expectClean(view)
@@ -945,7 +945,7 @@ test('shows the inventory fallback, the unsafe dirs, the unreadable lock and the
       detected: [],
       unsafeDirs: ['.claude/skills'],
       lockUnreadable: true,
-      capabilities: { trash: false, folderPicker: true }
+      capabilities: { trash: 'missing', folderPicker: true }
     }
   })
   const { view } = await open({ state })
@@ -953,6 +953,34 @@ test('shows the inventory fallback, the unsafe dirs, the unreadable lock and the
   assert.equal(view.find({ type: 'Callout', text: FR.outsideProject('.claude/skills') })!.props.tone, 'danger')
   assert.notEqual(view.find({ text: FR.lockUnreadable }), null)
   assert.notEqual(view.find({ text: FR.trashUnavailable }), null)
+  await expectClean(view)
+})
+
+test('the Trash banner follows the Trash status, and a ready Trash shows none', async () => {
+  const trashBanners = [FR.trashUnavailable, FR.trashUnverified('Windows'), FR.trashUnverified('Linux'), FR.trashNetwork]
+  const cases: [PanelState['capabilities']['trash'], string, string | null][] = [
+    ['missing', 'darwin', FR.trashUnavailable],
+    ['unverified', 'win32', FR.trashUnverified('Windows')],
+    ['unverified', 'linux', FR.trashUnverified('Linux')],
+    ['network', 'win32', FR.trashNetwork],
+    ['ready', 'darwin', null]
+  ]
+  for (const [trash, platform, banner] of cases) {
+    const state = stateOf({ skills: [HANDWRITTEN], overrides: { platform, capabilities: { trash, folderPicker: true } } })
+    const { view } = await open({ state })
+    for (const text of trashBanners) {
+      assert.equal(view.find({ type: 'Callout', text }) !== null, text === banner, `${trash} on ${platform}: ${text}`)
+    }
+    await expectClean(view)
+  }
+})
+
+test('a removal refused for an unverified Trash says so under the row, with the OS', async () => {
+  const state = stateOf({ skills: [HANDWRITTEN], overrides: { platform: 'win32', capabilities: { trash: 'unverified', folderPicker: true } } })
+  const { view } = await open({ state, start: () => ({ ok: false, error: { code: 'trash-unverified' } }) })
+  await view.press({ label: FR.removeSkillLabel('motion-context') })
+  await view.press({ text: FR.removeConfirm })
+  assert.notEqual(view.find({ type: 'Callout', text: FR.errors.trashUnverified('Windows') }), null)
   await expectClean(view)
 })
 
